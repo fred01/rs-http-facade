@@ -11,9 +11,9 @@ A simple HTTP REST facade for Redis Streams written in Go. This service provides
 - **SSE keepalive** - configurable keepalive comments to maintain long-lived connections
 - **Consumer control** - RDY flow control for consumers
 - **Message lifecycle management** - touch, finish, and requeue messages with automatic expiry
-- **Admin endpoints** - ping, info, and stream listing
+- **Automatic message recovery** - expired messages are automatically requeued for other consumers using `XAUTOCLAIM`
+- **Admin endpoints** - ping, info, stream listing, and statistics
 - **Secure authentication** - constant-time bearer token validation to prevent timing attacks
-- **Memory leak prevention** - automatic cleanup of expired messages
 
 ## Installation
 
@@ -404,7 +404,7 @@ The facade maintains:
 - **Per-client consumers**: Each HTTP client connection creates its own consumer within the consumer group
 - **Native Redis Streams load balancing**: Messages are distributed by Redis across all consumers in a group (just like native Redis Streams)
 - **Active message registry**: Tracks in-flight messages with automatic expiry (5 minutes default)
-- **Background cleanup**: Periodic cleanup of expired messages to prevent memory leaks
+- **Automatic message redelivery**: Expired messages remain in the pending list and are automatically claimed by other consumers using `XAUTOCLAIM`
 
 ### Load Balancing Example
 
@@ -417,13 +417,23 @@ When you have 3 messages in a stream and 3 HTTP clients connected to the same co
 
 This mirrors native Redis Streams behavior where each consumer in a group gets a share of the messages.
 
+### Automatic Message Recovery
+
+If a consumer dies or disconnects without acknowledging messages:
+1. Messages remain in the pending entries list (PEL) with idle time
+2. After 5 minutes, the message expires from our internal tracking
+3. Other active consumers automatically claim idle messages using `XAUTOCLAIM`
+4. The message is redelivered to the new consumer
+
+This ensures no messages are lost when consumers fail.
+
 ## Security
 
 All endpoints require authentication via Bearer token. Set a strong token using the `-bearer-token` flag when starting the service.
 
 **Security Features**:
 - **Constant-time token comparison**: Prevents timing attacks on the bearer token
-- **Automatic message expiry**: Messages not processed within 5 minutes are reclaimed, preventing memory leaks
+- **Automatic message recovery**: Messages not processed within 5 minutes are automatically requeued for other consumers
 - **No default token in Docker**: The Dockerfile requires explicit token configuration
 
 ## Testing

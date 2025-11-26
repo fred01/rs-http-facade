@@ -284,22 +284,19 @@ func main() {
 }
 
 // cleanupExpiredMessages removes expired messages from the activeMessages map
+// Expired messages are NOT acknowledged - they remain in the pending list
+// with idle time, allowing other consumers to claim them via XCLAIM
 func cleanupExpiredMessages() {
-	ctx := context.Background()
 	for range messageCleanupTicker.C {
 		now := time.Now()
 		activeMessagesMutex.Lock()
 		for id, msgWithExpiry := range activeMessages {
 			if now.After(msgWithExpiry.expiry) {
-				// Message expired, acknowledge it to remove from pending list
-				// Note: In a production system, you might want to move this to a dead letter queue
-				log.Printf("Cleaned up expired message: %s", id)
+				// Message expired - remove from our tracking but DO NOT XACK
+				// This leaves the message in the pending entries list (PEL)
+				// with idle time, allowing other consumers to claim it
+				log.Printf("Message expired (not acked, available for reclaim): %s", id)
 				delete(activeMessages, id)
-				// XACK the message to remove from pending entries list
-				_, err := redisClient.XAck(ctx, msgWithExpiry.stream, msgWithExpiry.group, msgWithExpiry.messageID).Result()
-				if err != nil {
-					log.Printf("Failed to acknowledge expired message %s: %v", id, err)
-				}
 			}
 		}
 		activeMessagesMutex.Unlock()
@@ -759,7 +756,31 @@ func handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 
-				// Read messages from stream
+				// First, try to claim idle messages from other consumers
+				// that have been pending for more than 5 minutes (messageExpiryDuration)
+				claimedMsgs, _, err := redisClient.XAutoClaim(readCtx, &redis.XAutoClaimArgs{
+					Stream:   stream,
+					Group:    group,
+					Consumer: consumerName,
+					MinIdle:  messageExpiryDuration,
+					Start:    "0-0",
+					Count:    1,
+				}).Result()
+
+				if err == nil && len(claimedMsgs) > 0 {
+					for _, msg := range claimedMsgs {
+						log.Printf("Claimed idle message %s from pending list", msg.ID)
+						select {
+						case state.messageChan <- msg:
+							atomic.AddInt64(&state.received, 1)
+						case <-state.stopChan:
+							return
+						}
+					}
+					continue // Process claimed messages before reading new ones
+				}
+
+				// Read new messages from stream
 				streams, err := redisClient.XReadGroup(readCtx, &redis.XReadGroupArgs{
 					Group:    group,
 					Consumer: consumerName,
