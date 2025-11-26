@@ -1,0 +1,711 @@
+openapi: 3.0.3
+info:
+  title: Redis Streams HTTP Facade API
+  version: 1.0.0
+  description: |
+    A simple HTTP REST facade for Redis Streams written in Go. This service provides HTTP endpoints to interact with Redis Streams, including publishing messages, consuming messages via Server-Sent Events (SSE), and controlling message lifecycle.
+    
+    ## Features
+    - REST API for Redis Streams operations
+    - Producer endpoints (XADD) - publish single or multiple messages
+    - Per-client consumers - each HTTP client gets its own Redis consumer for native load balancing
+    - Consumer SSE endpoint - consume messages in real-time via Server-Sent Events
+    - Consumer control - RDY flow control for consumers
+    - Message lifecycle management - touch, finish, and requeue messages with automatic expiry
+    - Admin endpoints - ping, info, and stream listing
+    - Secure authentication - constant-time bearer token validation to prevent timing attacks
+  contact:
+    name: Redis Streams HTTP Facade
+    url: https://github.com/fred01/rs-http-facade
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: Producer
+    description: Publishing messages to Redis Streams
+  - name: Consumer
+    description: Consuming messages from Redis Streams
+  - name: Message Lifecycle
+    description: Message lifecycle management (touch, finish, requeue)
+  - name: Admin
+    description: Redis admin operations
+
+paths:
+  /api/streams/{stream}/messages:
+    post:
+      tags:
+        - Producer
+      summary: Publish single message (XADD)
+      description: Publishes a single message to the specified Redis Stream
+      operationId: publishMessage
+      parameters:
+        - name: stream
+          in: path
+          required: true
+          description: Redis Stream name
+          schema:
+            type: string
+            example: test-stream
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Message'
+            example:
+              data: {"hello": "world"}
+      responses:
+        '201':
+          description: Message published successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublishResponse'
+              example:
+                status: ok
+                stream: test-stream
+                id: "1234567890123-0"
+        '400':
+          description: Invalid JSON or bad request
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '500':
+          description: Failed to publish message
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/streams/{stream}/messages/batch:
+    post:
+      tags:
+        - Producer
+      summary: Publish multiple messages (XADD pipeline)
+      description: Publishes multiple messages to the specified Redis Stream in a single batch using pipelining
+      operationId: publishMultipleMessages
+      parameters:
+        - name: stream
+          in: path
+          required: true
+          description: Redis Stream name
+          schema:
+            type: string
+            example: test-stream
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MultiMessage'
+            example:
+              messages:
+                - "message 1"
+                - "message 2"
+                - "message 3"
+      responses:
+        '201':
+          description: Messages published successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchPublishResponse'
+              example:
+                status: ok
+                stream: test-stream
+                count: 3
+        '400':
+          description: Invalid JSON, bad request, or empty messages array
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '500':
+          description: Failed to publish messages
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/events:
+    get:
+      tags:
+        - Consumer
+      summary: Consume messages via SSE
+      description: |
+        Opens a Server-Sent Events stream to consume messages from the specified Redis Stream and consumer group.
+        
+        **Important Notes:**
+        - Messages received via SSE require explicit acknowledgement. You must explicitly finish, requeue, or touch each message using the message lifecycle endpoints.
+        - **Native Redis Streams load balancing**: Each HTTP client creates its own consumer within the consumer group. When multiple clients connect to the same stream/group, Redis distributes messages across them, just like native Redis Streams clients.
+        - This enables horizontal scaling: add more HTTP clients to process messages in parallel.
+        - **Keepalive**: The server sends SSE comment lines (`: keepalive`) at a configurable interval (default: 60 seconds) to keep the connection alive. This can be configured via `sse_keepalive_interval_sec` setting or disabled by setting it to a negative value.
+      operationId: consumeMessages
+      parameters:
+        - name: stream
+          in: query
+          required: true
+          description: Redis Stream name
+          schema:
+            type: string
+            example: test-stream
+        - name: group
+          in: query
+          required: true
+          description: Consumer group name
+          schema:
+            type: string
+            example: test-group
+      responses:
+        '200':
+          description: |
+            Server-Sent Events stream of messages. Each event contains a JSON-encoded message with the following structure.
+            
+            See the SSEMessage schema for the structure of each message in the stream.
+            
+            The server also sends periodic keepalive comments (`: keepalive`) to maintain the connection.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Stream of SSE events, each containing a JSON-encoded message.
+                  
+                  Example event format:
+                  data: {"id":"1234567890123-0","body":"message content"}
+                  
+                  Keepalive comment format:
+                  : keepalive
+              example: |
+                : keepalive
+                
+                data: {"id":"1234567890123-0","body":"message content"}
+                
+        '400':
+          description: Stream and group query parameters are required
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '500':
+          description: Failed to create consumer or connect to Redis
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/consumers/{stream}/{group}:
+    get:
+      tags:
+        - Consumer
+      summary: Get consumer status
+      description: Returns aggregated status of all consumers for the specified stream/group
+      operationId: getConsumerStatus
+      parameters:
+        - name: stream
+          in: path
+          required: true
+          description: Redis Stream name
+          schema:
+            type: string
+            example: test-stream
+        - name: group
+          in: path
+          required: true
+          description: Consumer group name
+          schema:
+            type: string
+            example: test-group
+      responses:
+        '200':
+          description: Consumer status returned successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsumerStatus'
+              example:
+                stream: test-stream
+                group: test-group
+                consumers: 3
+                messages: 100
+                finished: 95
+                requeued: 5
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          description: No consumers found for this stream/group
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/consumers/{stream}/{group}/rdy:
+    post:
+      tags:
+        - Consumer
+      summary: Set consumer RDY count
+      description: Sets the RDY (ready) count for all consumers of the specified stream/group. This controls the flow of messages to consumers.
+      operationId: setConsumerRdy
+      parameters:
+        - name: stream
+          in: path
+          required: true
+          description: Redis Stream name
+          schema:
+            type: string
+            example: test-stream
+        - name: group
+          in: path
+          required: true
+          description: Consumer group name
+          schema:
+            type: string
+            example: test-group
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RdyRequest'
+            example:
+              count: 5
+      responses:
+        '200':
+          description: RDY count set successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RdyResponse'
+              example:
+                status: ok
+                consumers: 2
+        '400':
+          description: Invalid JSON or bad request
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          description: No consumers found for this stream/group
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/messages/{messageId}/touch:
+    post:
+      tags:
+        - Message Lifecycle
+      summary: Touch message (extend timeout)
+      description: Extends the timeout for the specified message, preventing it from being cleaned up
+      operationId: touchMessage
+      parameters:
+        - name: messageId
+          in: path
+          required: true
+          description: Message ID returned in the SSE event (Redis Stream entry ID format)
+          schema:
+            type: string
+            example: "1234567890123-0"
+      responses:
+        '200':
+          description: Message touched successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageActionResponse'
+              example:
+                status: ok
+                action: touched
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          description: Message not found or already processed
+          content:
+            text/plain:
+              schema:
+                type: string
+        '405':
+          description: Method not allowed
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/messages/{messageId}/finish:
+    post:
+      tags:
+        - Message Lifecycle
+      summary: Finish message (XACK)
+      description: Marks the message as successfully processed using XACK and removes it from the pending entries list
+      operationId: finishMessage
+      parameters:
+        - name: messageId
+          in: path
+          required: true
+          description: Message ID returned in the SSE event (Redis Stream entry ID format)
+          schema:
+            type: string
+            example: "1234567890123-0"
+      responses:
+        '200':
+          description: Message finished successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageActionResponse'
+              example:
+                status: ok
+                action: finished
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          description: Message not found or already processed
+          content:
+            text/plain:
+              schema:
+                type: string
+        '405':
+          description: Method not allowed
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/messages/{messageId}/requeue:
+    post:
+      tags:
+        - Message Lifecycle
+      summary: Requeue message
+      description: Acknowledges the message and optionally schedules it for delayed reprocessing
+      operationId: requeueMessage
+      parameters:
+        - name: messageId
+          in: path
+          required: true
+          description: Message ID returned in the SSE event (Redis Stream entry ID format)
+          schema:
+            type: string
+            example: "1234567890123-0"
+        - name: delay
+          in: query
+          required: false
+          description: Delay in seconds before the message becomes available again. If not specified, the message is acknowledged immediately.
+          schema:
+            type: integer
+            minimum: 0
+            example: 60
+      responses:
+        '200':
+          description: Message requeued successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageActionResponse'
+              example:
+                status: ok
+                action: requeued
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          description: Message not found or already processed
+          content:
+            text/plain:
+              schema:
+                type: string
+        '405':
+          description: Method not allowed
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /admin/ping:
+    get:
+      tags:
+        - Admin
+      summary: Ping Redis
+      description: Tests connectivity to Redis
+      operationId: adminPing
+      responses:
+        '200':
+          description: Redis is reachable
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: PONG
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '500':
+          description: Failed to ping Redis
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /admin/info:
+    get:
+      tags:
+        - Admin
+      summary: Get Redis info
+      description: Returns Redis server information
+      operationId: adminInfo
+      responses:
+        '200':
+          description: Redis info returned successfully
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '500':
+          description: Failed to get Redis info
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /admin/streams:
+    get:
+      tags:
+        - Admin
+      summary: List all streams
+      description: Returns a list of all Redis Streams in the database
+      operationId: adminListStreams
+      responses:
+        '200':
+          description: Streams listed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  streams:
+                    type: array
+                    items:
+                      type: string
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '500':
+          description: Failed to list streams
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /admin/{streamName}:
+    get:
+      tags:
+        - Admin
+      summary: Get stream info
+      description: Returns information about a specific Redis Stream
+      operationId: adminStreamInfo
+      parameters:
+        - name: streamName
+          in: path
+          required: true
+          description: Redis Stream name
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Stream info returned successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Redis XINFO STREAM output
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          description: Stream not found
+          content:
+            text/plain:
+              schema:
+                type: string
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: Bearer token authentication. Include your token in the Authorization header as "Bearer your-secret-token"
+
+  schemas:
+    Message:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          description: Message content (can be any JSON value)
+          oneOf:
+            - type: object
+            - type: string
+            - type: array
+            - type: number
+            - type: boolean
+      example:
+        data: {"hello": "world"}
+
+    MultiMessage:
+      type: object
+      required:
+        - messages
+      properties:
+        messages:
+          type: array
+          items:
+            description: Message content (can be any JSON value)
+            oneOf:
+              - type: object
+              - type: string
+              - type: array
+              - type: number
+              - type: boolean
+          minItems: 1
+      example:
+        messages:
+          - "message 1"
+          - "message 2"
+          - "message 3"
+
+    PublishResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        stream:
+          type: string
+          example: test-stream
+        id:
+          type: string
+          description: Redis Stream entry ID
+          example: "1234567890123-0"
+
+    BatchPublishResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        stream:
+          type: string
+          example: test-stream
+        count:
+          type: integer
+          example: 3
+
+    SSEMessage:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Message ID (Redis Stream entry ID, used for lifecycle operations)
+          example: "1234567890123-0"
+        body:
+          type: string
+          description: Message body content
+          example: "message content"
+
+    ConsumerStatus:
+      type: object
+      properties:
+        stream:
+          type: string
+          description: Redis Stream name
+          example: test-stream
+        group:
+          type: string
+          description: Consumer group name
+          example: test-group
+        consumers:
+          type: integer
+          description: Number of active consumers
+          example: 3
+        messages:
+          type: integer
+          description: Total messages received
+          example: 100
+        finished:
+          type: integer
+          description: Total messages finished
+          example: 95
+        requeued:
+          type: integer
+          description: Total messages requeued
+          example: 5
+
+    RdyRequest:
+      type: object
+      required:
+        - count
+      properties:
+        count:
+          type: integer
+          description: RDY count (number of messages to receive at once)
+          minimum: 0
+          example: 5
+
+    RdyResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        consumers:
+          type: integer
+          description: Number of consumers affected
+          example: 2
+
+    MessageActionResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        action:
+          type: string
+          enum:
+            - touched
+            - finished
+            - requeued
+          example: finished
+
+  responses:
+    UnauthorizedError:
+      description: Authentication failed - invalid or missing bearer token
+      content:
+        text/plain:
+          schema:
+            type: string
+          examples:
+            missingToken:
+              value: Authorization header required
+            invalidFormat:
+              value: Invalid bearer token format
+            invalidToken:
+              value: Invalid bearer token

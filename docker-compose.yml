@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - rs-network
+    command: redis-server --appendonly yes
+
+  rs-http-facade:
+    build: .
+    command: 
+      - "-bearer-token=${BEARER_TOKEN:-your-secret-token}"
+      - "-redis-address=redis:6379"
+      - "-http-address=:8080"
+    depends_on:
+      - redis
+    ports:
+      - "8080:8080"
+    networks:
+      - rs-network
+
+networks:
+  rs-network:
+    driver: bridge
