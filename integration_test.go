@@ -7,7 +7,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,7 +18,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
@@ -249,47 +247,25 @@ func startFacadeServer(t *testing.T, redisAddr string) (int, func()) {
 	}
 	listener.Close()
 
-	// Set configuration
-	*redisAddress = redisAddr
-	*redisPassword = ""
-	*redisDB = 0
-	*httpAddress = fmt.Sprintf(":%d", port)
-	*bearerToken = "test-token"
-
-	// Initialize
-	bearerTokenHash = sha256.Sum256([]byte("test-token"))
-
-	// Initialize Redis client
-	redisClient = redis.NewClient(&redis.Options{
-		Addr:     redisAddr,
-		Password: "",
-		DB:       0,
-	})
-
-	// Set finalConfig
-	finalConfig = AppConfig{
+	// Create server configuration
+	config := AppConfig{
 		RedisAddress:            redisAddr,
+		RedisPassword:           "",
+		RedisDB:                 0,
 		HTTPAddress:             fmt.Sprintf(":%d", port),
+		BearerToken:             "test-token",
 		SSEKeepaliveIntervalSec: 60,
 	}
 
-	// Start server in background
-	srv := &http.Server{
-		Addr: fmt.Sprintf(":%d", port),
+	// Create server instance
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
 	}
 
-	// Setup routes
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/streams/", authMiddleware(handleStreams))
-	mux.HandleFunc("/api/messages/", authMiddleware(handleMessages))
-	mux.HandleFunc("/api/consumers/", authMiddleware(handleConsumers))
-	mux.HandleFunc("/api/events", authMiddleware(handleConsumerEvents))
-	mux.HandleFunc("/admin/", authMiddleware(handleAdmin))
-
-	srv.Handler = mux
-
+	// Start server in background
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := server.Start(); err != nil && err != http.ErrServerClosed {
 			t.Logf("Server error: %v", err)
 		}
 	}()
@@ -300,32 +276,28 @@ func startFacadeServer(t *testing.T, redisAddr string) (int, func()) {
 	t.Logf("Facade server started on port %d", port)
 
 	stopFunc := func() {
-		// First, stop all consumers
-		consumersMutex.Lock()
-		for key, consumer := range consumers {
+		// Stop all consumers
+		server.consumersMutex.Lock()
+		for key, consumer := range server.consumers {
 			select {
 			case <-consumer.stopChan:
 				// Already closed
 			default:
 				close(consumer.stopChan)
 			}
-			delete(consumers, key)
+			delete(server.consumers, key)
 		}
-		consumersMutex.Unlock()
+		server.consumersMutex.Unlock()
 
 		// Clean up active messages
-		activeMessagesMutex.Lock()
-		for key := range activeMessages {
-			delete(activeMessages, key)
+		server.activeMessagesMutex.Lock()
+		for key := range server.activeMessages {
+			delete(server.activeMessages, key)
 		}
-		activeMessagesMutex.Unlock()
+		server.activeMessagesMutex.Unlock()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		srv.Shutdown(ctx)
-		if redisClient != nil {
-			redisClient.Close()
-		}
+		// Stop the server
+		server.Stop()
 	}
 
 	return port, stopFunc

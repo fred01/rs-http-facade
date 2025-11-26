@@ -11,17 +11,27 @@ import (
 
 const testToken = "test-bearer-token"
 
-func setupTestEnv() {
-	// Set bearer token for tests
-	*bearerToken = testToken
-	// Pre-calculate bearer token hash for constant-time comparison
-	bearerTokenHash = sha256.Sum256([]byte(testToken))
+// createTestServer creates a Server instance for testing
+func createTestServer() *Server {
+	config := AppConfig{
+		RedisAddress:            "localhost:6379",
+		HTTPAddress:             ":8080",
+		BearerToken:             testToken,
+		SSEKeepaliveIntervalSec: 60,
+	}
+
+	return &Server{
+		config:          config,
+		consumers:       make(map[string]*consumerState),
+		activeMessages:  make(map[string]*messageWithExpiry),
+		bearerTokenHash: sha256.Sum256([]byte(testToken)),
+	}
 }
 
 func TestAuthMiddleware(t *testing.T) {
-	setupTestEnv()
+	server := createTestServer()
 
-	handler := authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	handler := server.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("authenticated"))
 	})
@@ -152,7 +162,7 @@ func TestMessageStructures(t *testing.T) {
 }
 
 func TestHandleAddValidation(t *testing.T) {
-	setupTestEnv()
+	server := createTestServer()
 
 	tests := []struct {
 		name           string
@@ -184,7 +194,7 @@ func TestHandleAddValidation(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 
 			rr := httptest.NewRecorder()
-			handleAdd(rr, req, tt.stream)
+			server.handleAdd(rr, req, tt.stream)
 
 			if rr.Code != tt.expectedStatus {
 				t.Errorf("expected status %d, got %d", tt.expectedStatus, rr.Code)
@@ -194,7 +204,7 @@ func TestHandleAddValidation(t *testing.T) {
 }
 
 func TestHandleBatchAddValidation(t *testing.T) {
-	setupTestEnv()
+	server := createTestServer()
 
 	tests := []struct {
 		name           string
@@ -233,7 +243,7 @@ func TestHandleBatchAddValidation(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 
 			rr := httptest.NewRecorder()
-			handleBatchAdd(rr, req, tt.stream)
+			server.handleBatchAdd(rr, req, tt.stream)
 
 			if rr.Code != tt.expectedStatus {
 				t.Errorf("expected status %d, got %d", tt.expectedStatus, rr.Code)
@@ -243,7 +253,7 @@ func TestHandleBatchAddValidation(t *testing.T) {
 }
 
 func TestHandleConsumerRdyValidation(t *testing.T) {
-	setupTestEnv()
+	server := createTestServer()
 
 	tests := []struct {
 		name           string
@@ -278,7 +288,7 @@ func TestHandleConsumerRdyValidation(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 
 			rr := httptest.NewRecorder()
-			handleConsumerRdy(rr, req, "test", "group")
+			server.handleConsumerRdy(rr, req, "test", "group")
 
 			if rr.Code != tt.expectedStatus {
 				t.Errorf("expected status %d, got %d", tt.expectedStatus, rr.Code)
@@ -288,7 +298,7 @@ func TestHandleConsumerRdyValidation(t *testing.T) {
 }
 
 func TestHandleMessagesValidation(t *testing.T) {
-	setupTestEnv()
+	server := createTestServer()
 
 	tests := []struct {
 		name           string
@@ -328,7 +338,7 @@ func TestHandleMessagesValidation(t *testing.T) {
 			req.Header.Set("Authorization", "Bearer "+testToken)
 
 			rr := httptest.NewRecorder()
-			handleMessages(rr, req)
+			server.handleMessages(rr, req)
 
 			if rr.Code != tt.expectedStatus {
 				t.Errorf("expected status %d, got %d", tt.expectedStatus, rr.Code)
@@ -338,7 +348,7 @@ func TestHandleMessagesValidation(t *testing.T) {
 }
 
 func TestHandleConsumerEventsValidation(t *testing.T) {
-	setupTestEnv()
+	server := createTestServer()
 
 	tests := []struct {
 		name           string
@@ -372,7 +382,7 @@ func TestHandleConsumerEventsValidation(t *testing.T) {
 			req.Header.Set("Authorization", "Bearer "+testToken)
 
 			rr := httptest.NewRecorder()
-			handleConsumerEvents(rr, req)
+			server.handleConsumerEvents(rr, req)
 
 			if rr.Code != tt.expectedStatus {
 				t.Errorf("expected status %d, got %d", tt.expectedStatus, rr.Code)
