@@ -10,8 +10,8 @@ A simple HTTP REST facade for Redis Streams written in Go. This service provides
 - **Consumer SSE endpoint** - consume messages in real-time via Server-Sent Events
 - **SSE keepalive** - configurable keepalive comments to maintain long-lived connections
 - **Consumer control** - RDY flow control for consumers
-- **Message lifecycle management** - touch, finish, and requeue messages with automatic expiry
-- **Automatic message recovery** - expired messages are automatically requeued for other consumers using `XAUTOCLAIM`
+- **Message lifecycle management** - touch and finish messages with automatic expiry
+- **Automatic message recovery** - expired messages are automatically claimed by other consumers using `XAUTOCLAIM`
 - **Admin endpoints** - ping, info, stream listing, and statistics
 - **Secure authentication** - constant-time bearer token validation to prevent timing attacks
 
@@ -191,7 +191,7 @@ This endpoint returns a stream of Server-Sent Events. Each event contains:
 ```
 
 **Important Notes**:
-- Messages received via SSE require explicit acknowledgement. You must explicitly finish, requeue, or touch each message using the message lifecycle endpoints.
+- Messages received via SSE require explicit acknowledgement. You must explicitly finish or touch each message using the message lifecycle endpoints.
 - **Native Redis Streams load balancing**: Each HTTP client creates its own consumer within the consumer group. When multiple clients connect to the same stream/group, Redis distributes messages across them, just like native Redis Streams clients.
 - This enables horizontal scaling: add more HTTP clients to process messages in parallel.
 - **Keepalive**: The server sends SSE comment lines (`: keepalive`) at a configurable interval (default: 60 seconds) to keep the connection alive.
@@ -230,8 +230,7 @@ Response:
   "group": "your-group",
   "consumers": 3,
   "messages": 100,
-  "finished": 95,
-  "requeued": 5
+  "finished": 95
 }
 ```
 
@@ -264,24 +263,6 @@ Response:
 {
   "status": "ok",
   "action": "finished"
-}
-```
-
-#### Requeue Message (Fail/Retry)
-
-```http
-POST /api/messages/{message-id}/requeue?delay=60
-Authorization: Bearer your-secret-token
-```
-
-Query parameter:
-- `delay` (optional) - Delay in seconds before the message becomes available again. If not specified, the message is acknowledged immediately.
-
-Response:
-```json
-{
-  "status": "ok",
-  "action": "requeued"
 }
 ```
 
@@ -413,7 +394,7 @@ When you have 3 messages in a stream and 3 HTTP clients connected to the same co
 2. Client 2 connects → creates consumer #2 in group  
 3. Client 3 connects → creates consumer #3 in group
 4. Redis distributes the 3 messages: one to each consumer (client)
-5. Each client processes its message independently and calls finish/requeue
+5. Each client processes its message independently and calls finish
 
 This mirrors native Redis Streams behavior where each consumer in a group gets a share of the messages.
 
@@ -433,7 +414,7 @@ All endpoints require authentication via Bearer token. Set a strong token using 
 
 **Security Features**:
 - **Constant-time token comparison**: Prevents timing attacks on the bearer token
-- **Automatic message recovery**: Messages not processed within 5 minutes are automatically requeued for other consumers
+- **Automatic message recovery**: Messages not processed within 5 minutes are automatically claimed by other consumers
 - **No default token in Docker**: The Dockerfile requires explicit token configuration
 
 ## Testing
@@ -470,7 +451,7 @@ The integration tests verify:
 - Messages are distributed across multiple HTTP consumers (load balancing)
 - Each consumer receives at least one message
 - Total messages received equals total messages published
-- Proper message lifecycle management (finish/requeue)
+- Proper message lifecycle management (finish)
 
 **Message Finish (TestMessageFinish)**:
 - Messages can be acknowledged using XACK

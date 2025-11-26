@@ -60,28 +60,23 @@ echo "6. Touching a message to extend timeout..."
 auth_curl -X POST "${API_URL}/api/messages/${MESSAGE_ID}/touch"
 echo -e "\n"
 
-# Example 7: Message lifecycle - requeue a message with delay
-echo "7. Requeuing a message with 60 second delay..."
-auth_curl -X POST "${API_URL}/api/messages/${MESSAGE_ID}/requeue?delay=60"
-echo -e "\n"
-
-# Example 8: Access admin API - ping
-echo "8. Checking Redis connection via admin endpoint..."
+# Example 7: Access admin API - ping
+echo "7. Checking Redis connection via admin endpoint..."
 auth_curl -X GET "${API_URL}/admin/ping"
 echo -e "\n"
 
-# Example 9: Access admin API - list streams
-echo "9. Listing all streams..."
+# Example 8: Access admin API - list streams
+echo "8. Listing all streams..."
 auth_curl -X GET "${API_URL}/admin/streams"
 echo -e "\n"
 
-# Example 10: Access admin API - get statistics
-echo "10. Getting statistics for all streams and consumer groups..."
+# Example 9: Access admin API - get statistics
+echo "9. Getting statistics for all streams and consumer groups..."
 auth_curl -X GET "${API_URL}/admin/stats"
 echo -e "\n"
 
-# Example 11: Consume messages via SSE (in background for 10 seconds)
-echo "11. Consuming messages via SSE for 10 seconds..."
+# Example 10: Consume messages via SSE (in background for 10 seconds)
+echo "10. Consuming messages via SSE for 10 seconds..."
 echo "   (Press Ctrl+C to stop earlier)"
 timeout 10s auth_curl -N "${API_URL}/api/events?stream=${STREAM}&group=${GROUP}" || true
 echo -e "\n"

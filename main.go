@@ -207,7 +207,6 @@ type consumerState struct {
 	ready        int32 // RDY count
 	received     int64
 	finished     int64
-	requeued     int64
 }
 
 func main() {
@@ -489,11 +488,10 @@ func handleConsumerStatus(w http.ResponseWriter, r *http.Request, stream, group 
 	}
 
 	// Aggregate stats from all consumers
-	var totalMessages, totalFinished, totalRequeued int64
+	var totalMessages, totalFinished int64
 	for _, consumer := range matchingConsumers {
 		totalMessages += atomic.LoadInt64(&consumer.received)
 		totalFinished += atomic.LoadInt64(&consumer.finished)
-		totalRequeued += atomic.LoadInt64(&consumer.requeued)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -503,7 +501,6 @@ func handleConsumerStatus(w http.ResponseWriter, r *http.Request, stream, group 
 		"consumers": len(matchingConsumers),
 		"messages":  totalMessages,
 		"finished":  totalFinished,
-		"requeued":  totalRequeued,
 	})
 }
 
@@ -557,7 +554,6 @@ func handleConsumerRdy(w http.ResponseWriter, r *http.Request, stream, group str
 // handleMessages handles message lifecycle operations
 // POST /api/messages/:messageId/touch - extend message timeout
 // POST /api/messages/:messageId/finish - mark message as successfully processed (XACK)
-// POST /api/messages/:messageId/requeue - requeue message (XCLAIM back)
 func handleMessages(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -616,52 +612,8 @@ func handleMessages(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "action": "finished"})
-	case "requeue":
-		// Parse delay from query parameter (optional, in seconds)
-		delayStr := r.URL.Query().Get("delay")
-		var delay time.Duration = 0
-		if delayStr != "" {
-			if d, err := strconv.Atoi(delayStr); err == nil {
-				delay = time.Duration(d) * time.Second
-			}
-		}
-
-		// For requeue with delay, we store the delay time in a separate key
-		// and handle it during the next read cycle
-		if delay > 0 {
-			// Set a delayed requeue using a separate sorted set
-			delayedKey := fmt.Sprintf("rs:delayed:%s:%s", msgWithExpiry.stream, msgWithExpiry.group)
-			score := float64(time.Now().Add(delay).Unix())
-			_, err := redisClient.ZAdd(ctx, delayedKey, redis.Z{
-				Score:  score,
-				Member: msgWithExpiry.messageID,
-			}).Result()
-			if err != nil {
-				http.Error(w, fmt.Sprintf("Failed to schedule delayed requeue: %v", err), http.StatusInternalServerError)
-				return
-			}
-		}
-
-		// Acknowledge the original message first to remove from PEL
-		_, err := redisClient.XAck(ctx, msgWithExpiry.stream, msgWithExpiry.group, msgWithExpiry.messageID).Result()
-		if err != nil {
-			log.Printf("Warning: Failed to acknowledge message for requeue: %v", err)
-		}
-
-		// Update consumer stats
-		consumersMutex.RLock()
-		if consumer, ok := consumers[msgWithExpiry.consumerKey]; ok {
-			atomic.AddInt64(&consumer.requeued, 1)
-		}
-		consumersMutex.RUnlock()
-		activeMessagesMutex.Lock()
-		delete(activeMessages, messageID)
-		activeMessagesMutex.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "action": "requeued"})
 	default:
-		http.Error(w, "Invalid action. Use: touch, finish, or requeue", http.StatusBadRequest)
+		http.Error(w, "Invalid action. Use: touch or finish", http.StatusBadRequest)
 	}
 }
 

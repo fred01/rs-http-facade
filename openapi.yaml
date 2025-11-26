@@ -11,7 +11,7 @@ info:
     - Per-client consumers - each HTTP client gets its own Redis consumer for native load balancing
     - Consumer SSE endpoint - consume messages in real-time via Server-Sent Events
     - Consumer control - RDY flow control for consumers
-    - Message lifecycle management - touch, finish, and requeue messages with automatic expiry
+    - Message lifecycle management - touch and finish messages with automatic expiry
     - Admin endpoints - ping, info, and stream listing
     - Secure authentication - constant-time bearer token validation to prevent timing attacks
   contact:
@@ -34,7 +34,7 @@ tags:
   - name: Consumer
     description: Consuming messages from Redis Streams
   - name: Message Lifecycle
-    description: Message lifecycle management (touch, finish, requeue)
+    description: Message lifecycle management (touch, finish)
   - name: Admin
     description: Redis admin operations
 
@@ -149,7 +149,7 @@ paths:
         Opens a Server-Sent Events stream to consume messages from the specified Redis Stream and consumer group.
         
         **Important Notes:**
-        - Messages received via SSE require explicit acknowledgement. You must explicitly finish, requeue, or touch each message using the message lifecycle endpoints.
+        - Messages received via SSE require explicit acknowledgement. You must explicitly finish or touch each message using the message lifecycle endpoints.
         - **Native Redis Streams load balancing**: Each HTTP client creates its own consumer within the consumer group. When multiple clients connect to the same stream/group, Redis distributes messages across them, just like native Redis Streams clients.
         - This enables horizontal scaling: add more HTTP clients to process messages in parallel.
         - **Keepalive**: The server sends SSE comment lines (`: keepalive`) at a configurable interval (default: 60 seconds) to keep the connection alive. This can be configured via `sse_keepalive_interval_sec` setting or disabled by setting it to a negative value.
@@ -244,7 +244,6 @@ paths:
                 consumers: 3
                 messages: 100
                 finished: 95
-                requeued: 5
         '401':
           $ref: '#/components/responses/UnauthorizedError'
         '404':
@@ -374,54 +373,6 @@ paths:
               example:
                 status: ok
                 action: finished
-        '401':
-          $ref: '#/components/responses/UnauthorizedError'
-        '404':
-          description: Message not found or already processed
-          content:
-            text/plain:
-              schema:
-                type: string
-        '405':
-          description: Method not allowed
-          content:
-            text/plain:
-              schema:
-                type: string
-
-  /api/messages/{messageId}/requeue:
-    post:
-      tags:
-        - Message Lifecycle
-      summary: Requeue message
-      description: Acknowledges the message and optionally schedules it for delayed reprocessing
-      operationId: requeueMessage
-      parameters:
-        - name: messageId
-          in: path
-          required: true
-          description: Message ID returned in the SSE event (Redis Stream entry ID format)
-          schema:
-            type: string
-            example: "1234567890123-0"
-        - name: delay
-          in: query
-          required: false
-          description: Delay in seconds before the message becomes available again. If not specified, the message is acknowledged immediately.
-          schema:
-            type: integer
-            minimum: 0
-            example: 60
-      responses:
-        '200':
-          description: Message requeued successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/MessageActionResponse'
-              example:
-                status: ok
-                action: requeued
         '401':
           $ref: '#/components/responses/UnauthorizedError'
         '404':
@@ -732,10 +683,6 @@ components:
           type: integer
           description: Total messages finished
           example: 95
-        requeued:
-          type: integer
-          description: Total messages requeued
-          example: 5
 
     RdyRequest:
       type: object
@@ -770,7 +717,6 @@ components:
           enum:
             - touched
             - finished
-            - requeued
           example: finished
 
   responses:
