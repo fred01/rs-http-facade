@@ -69,10 +69,6 @@ jobs:
           - goos: linux
             goarch: arm64
             suffix: linux-arm64
-          - goos: linux
-            goarch: arm
-            goarm: 7
-            suffix: linux-armv7
           # macOS
           - goos: darwin
             goarch: amd64
@@ -80,13 +76,6 @@ jobs:
           - goos: darwin
             goarch: arm64
             suffix: darwin-arm64
-          # Windows
-          - goos: windows
-            goarch: amd64
-            suffix: windows-amd64.exe
-          - goos: windows
-            goarch: arm64
-            suffix: windows-arm64.exe
 
     steps:
       - name: Checkout code
@@ -114,7 +103,6 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          GOARM: ${{ matrix.goarm }}
           CGO_ENABLED: 0
         run: |
           VERSION=${GITHUB_REF_NAME:-dev}
@@ -235,15 +223,9 @@ jobs:
               
               BINARY_FILE=$(basename "$BINARY_FILE")
               
-              if [[ "$BINARY_FILE" == *.exe ]]; then
-                # Windows: create zip archive
-                ARCHIVE_NAME="${BINARY_NAME}-${VERSION}.zip"
-                zip -j "release/${ARCHIVE_NAME}" "$dir/$BINARY_FILE"
-              else
-                # Linux/macOS: create tar.gz archive
-                ARCHIVE_NAME="${BINARY_NAME}-${VERSION}.tar.gz"
-                tar -czvf "release/${ARCHIVE_NAME}" -C "$dir" "$BINARY_FILE"
-              fi
+              # Create tar.gz archive
+              ARCHIVE_NAME="${BINARY_NAME}-${VERSION}.tar.gz"
+              tar -czvf "release/${ARCHIVE_NAME}" -C "$dir" "$BINARY_FILE"
             fi
           done
           
@@ -258,7 +240,6 @@ jobs:
           name: Release ${{ steps.version.outputs.version }}
           files: |
             release/*.tar.gz
-            release/*.zip
             release/checksums.txt
           generate_release_notes: true
           draft: false
