@@ -220,15 +220,36 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p release
+          VERSION="${{ steps.version.outputs.version }}"
+          
           for dir in artifacts/rs-http-facade-*; do
             if [ -d "$dir" ]; then
-              cp "$dir"/* release/ || true
+              # Get the binary name from the directory
+              BINARY_NAME=$(basename "$dir")
+              BINARY_FILE=$(find "$dir" -maxdepth 1 -type f -print -quit)
+              
+              if [ -z "$BINARY_FILE" ]; then
+                echo "Warning: No files found in $dir, skipping"
+                continue
+              fi
+              
+              BINARY_FILE=$(basename "$BINARY_FILE")
+              
+              if [[ "$BINARY_FILE" == *.exe ]]; then
+                # Windows: create zip archive
+                ARCHIVE_NAME="${BINARY_NAME}-${VERSION}.zip"
+                zip -j "release/${ARCHIVE_NAME}" "$dir/$BINARY_FILE"
+              else
+                # Linux/macOS: create tar.gz archive
+                ARCHIVE_NAME="${BINARY_NAME}-${VERSION}.tar.gz"
+                tar -czvf "release/${ARCHIVE_NAME}" -C "$dir" "$BINARY_FILE"
+              fi
             fi
           done
           
-          # Create checksums
+          # Create checksums for all files in release directory
           cd release
-          sha256sum rs-http-facade-* > checksums.txt
+          find . -maxdepth 1 -type f ! -name 'checksums.txt' -exec sha256sum {} + > checksums.txt
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -236,7 +257,8 @@ jobs:
           tag_name: ${{ steps.version.outputs.version }}
           name: Release ${{ steps.version.outputs.version }}
           files: |
-            release/rs-http-facade-*
+            release/*.tar.gz
+            release/*.zip
             release/checksums.txt
           generate_release_notes: true
           draft: false
