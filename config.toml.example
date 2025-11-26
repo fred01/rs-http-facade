@@ -1,0 +1,13 @@
+# Sample configuration for rs-http-facade
+# Copy this file to /etc/rs-http-facade/config.toml or supply via -config
+# All values except redis_password are required.
+
+redis_address = "localhost:6379"
+redis_password = ""
+redis_db = 0
+http_address = ":8080"
+bearer_token = "change-me"
+
+# SSE keepalive interval in seconds for consumers (default: 60)
+# Set to a negative value to disable keepalive
+# sse_keepalive_interval_sec = 60

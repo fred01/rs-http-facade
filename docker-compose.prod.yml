@@ -1,0 +1,100 @@
+# Production-ready docker-compose with Redis configured for maximum reliability
+# and external data storage
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: rs-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    networks:
+      - rs-network
+    volumes:
+      # External data storage - map to your persistent storage
+      - redis-data:/data
+      # Custom Redis configuration
+      - ./redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: redis-server /usr/local/etc/redis/redis.conf
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  rs-http-facade:
+    image: ghcr.io/fred01/rs-http-facade:latest
+    container_name: rs-http-facade
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    networks:
+      - rs-network
+    environment:
+      - BEARER_TOKEN=${BEARER_TOKEN:?BEARER_TOKEN is required}
+    command:
+      - "-bearer-token=${BEARER_TOKEN}"
+      - "-redis-address=redis:6379"
+      - "-http-address=:8080"
+      - "-message-timeout-sec=300"
+      - "-sse-keepalive-interval-sec=30"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/admin/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+networks:
+  rs-network:
+    driver: bridge
+
+volumes:
+  # Named volume for Redis data persistence
+  # For external storage, you can use:
+  # - NFS: driver: local, driver_opts: { type: nfs, ... }
+  # - Cloud storage: Use appropriate volume driver
+  redis-data:
+    driver: local
+    # Example for binding to external directory:
+    # driver_opts:
+    #   type: none
+    #   o: bind
+    #   device: /mnt/redis-data
