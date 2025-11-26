@@ -71,6 +71,8 @@ func mergeConfig(base *AppConfig, override AppConfig) {
 		base.RedisPassword = override.RedisPassword
 	}
 
+	// Note: RedisDB=0 is valid but we use it as "not set" since it's the default.
+	// Use environment variables or CLI flags to explicitly set database 0.
 	if override.RedisDB != 0 {
 		base.RedisDB = override.RedisDB
 	}
@@ -83,6 +85,8 @@ func mergeConfig(base *AppConfig, override AppConfig) {
 		base.BearerToken = override.BearerToken
 	}
 
+	// Note: SSEKeepaliveIntervalSec=0 means "use default" (set in main),
+	// negative values disable keepalive
 	if override.SSEKeepaliveIntervalSec != 0 {
 		base.SSEKeepaliveIntervalSec = override.SSEKeepaliveIntervalSec
 	}
@@ -287,20 +291,14 @@ func cleanupExpiredMessages() {
 		activeMessagesMutex.Lock()
 		for id, msgWithExpiry := range activeMessages {
 			if now.After(msgWithExpiry.expiry) {
-				// Message expired, claim it back to the pending list
-				// This makes it available for redelivery to any consumer
+				// Message expired, acknowledge it to remove from pending list
+				// Note: In a production system, you might want to move this to a dead letter queue
 				log.Printf("Cleaned up expired message: %s", id)
 				delete(activeMessages, id)
-				// XCLAIM the message back to make it available
-				_, err := redisClient.XClaim(ctx, &redis.XClaimArgs{
-					Stream:   msgWithExpiry.stream,
-					Group:    msgWithExpiry.group,
-					Consumer: msgWithExpiry.consumerKey,
-					MinIdle:  0,
-					Messages: []string{msgWithExpiry.messageID},
-				}).Result()
+				// XACK the message to remove from pending entries list
+				_, err := redisClient.XAck(ctx, msgWithExpiry.stream, msgWithExpiry.group, msgWithExpiry.messageID).Result()
 				if err != nil {
-					log.Printf("Failed to reclaim expired message %s: %v", id, err)
+					log.Printf("Failed to acknowledge expired message %s: %v", id, err)
 				}
 			}
 		}
@@ -802,6 +800,9 @@ func handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Consumer %s connected for stream=%s group=%s", consumerKey, stream, group)
 
 	// Setup keepalive ticker if enabled (interval > 0)
+	// Note: When keepalive is disabled, keepaliveChan remains nil.
+	// In Go, nil channels in select statements are never selected,
+	// so the keepalive case is effectively disabled.
 	var keepaliveTicker *time.Ticker
 	var keepaliveChan <-chan time.Time
 	if finalConfig.SSEKeepaliveIntervalSec > 0 {
@@ -908,18 +909,27 @@ func handleAdmin(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(result))
 
 	case "streams":
-		// List all streams
-		keys, err := redisClient.Keys(ctx, "*").Result()
-		if err != nil {
-			http.Error(w, fmt.Sprintf("Failed to list keys: %v", err), http.StatusInternalServerError)
-			return
-		}
-
+		// List all streams using SCAN to avoid blocking Redis
 		var streams []string
-		for _, key := range keys {
-			keyType, err := redisClient.Type(ctx, key).Result()
-			if err == nil && keyType == "stream" {
-				streams = append(streams, key)
+		var cursor uint64
+		for {
+			var keys []string
+			var err error
+			keys, cursor, err = redisClient.Scan(ctx, cursor, "*", 100).Result()
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Failed to scan keys: %v", err), http.StatusInternalServerError)
+				return
+			}
+
+			for _, key := range keys {
+				keyType, err := redisClient.Type(ctx, key).Result()
+				if err == nil && keyType == "stream" {
+					streams = append(streams, key)
+				}
+			}
+
+			if cursor == 0 {
+				break
 			}
 		}
 
