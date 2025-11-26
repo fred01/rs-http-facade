@@ -4,6 +4,7 @@ go 1.24.10
 
 require (
 	github.com/BurntSushi/toml v1.5.0
+	github.com/coreos/go-systemd/v22 v22.6.0
 	github.com/redis/go-redis/v9 v9.17.1
 	github.com/testcontainers/testcontainers-go v0.40.0
 )

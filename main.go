@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/coreos/go-systemd/v22/daemon"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -54,6 +55,7 @@ type Server struct {
 	activeMessagesMutex sync.RWMutex
 	bearerTokenHash     [32]byte
 	cleanupTicker       *time.Ticker
+	watchdogTicker      *time.Ticker
 	consumerIDCounter   uint64
 }
 
@@ -95,6 +97,10 @@ func (s *Server) Start() error {
 	s.cleanupTicker = time.NewTicker(30 * time.Second)
 	go s.cleanupExpiredMessages()
 
+	// Start systemd watchdog notification if enabled
+	// This prevents systemd from killing the service due to watchdog timeout
+	go s.startWatchdogNotifier()
+
 	// Setup HTTP routes using Go 1.22+ method-based routing patterns
 	mux := http.NewServeMux()
 
@@ -118,15 +124,41 @@ func (s *Server) Start() error {
 	mux.HandleFunc("POST /admin/flush", s.authMiddleware(s.handleAdminFlush))
 	mux.HandleFunc("GET /admin/{streamName}", s.authMiddleware(s.handleAdminStreamInfo))
 
+	// Notify systemd that the service is ready
+	daemon.SdNotify(false, daemon.SdNotifyReady)
+
 	log.Printf("Starting HTTP server on %s", s.config.HTTPAddress)
 	log.Printf("Connected to Redis at %s", s.config.RedisAddress)
 	return http.ListenAndServe(s.config.HTTPAddress, mux)
+}
+
+// startWatchdogNotifier periodically notifies systemd that the service is alive
+func (s *Server) startWatchdogNotifier() {
+	// Check if watchdog is enabled by systemd (WATCHDOG_USEC environment variable)
+	interval, err := daemon.SdWatchdogEnabled(false)
+	if err != nil || interval == 0 {
+		// Watchdog not enabled, nothing to do
+		return
+	}
+
+	// Notify at half the watchdog interval as recommended by systemd documentation
+	notifyInterval := interval / 2
+	s.watchdogTicker = time.NewTicker(notifyInterval)
+
+	log.Printf("Systemd watchdog enabled, notifying every %v", notifyInterval)
+
+	for range s.watchdogTicker.C {
+		daemon.SdNotify(false, daemon.SdNotifyWatchdog)
+	}
 }
 
 // Stop gracefully stops the server
 func (s *Server) Stop() {
 	if s.cleanupTicker != nil {
 		s.cleanupTicker.Stop()
+	}
+	if s.watchdogTicker != nil {
+		s.watchdogTicker.Stop()
 	}
 	if s.redisClient != nil {
 		s.redisClient.Close()
@@ -939,7 +971,11 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 
 	// Start background goroutine to read messages from Redis Stream
 	go func() {
-		readCtx := context.Background()
+		// Use a timeout for Redis operations to prevent indefinite blocking
+		// if Redis becomes unavailable. The timeout should be longer than
+		// the Block duration to allow normal blocking reads to complete.
+		const redisOpTimeout = 10 * time.Second
+
 		for {
 			select {
 			case <-state.stopChan:
@@ -951,6 +987,9 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 
+				// Create a context with timeout for Redis operations
+				readCtx, cancel := context.WithTimeout(context.Background(), redisOpTimeout)
+
 				// First, try to claim idle messages from other consumers
 				// that have been pending for more than 5 minutes (messageExpiryDuration)
 				claimedMsgs, _, err := s.redisClient.XAutoClaim(readCtx, &redis.XAutoClaimArgs{
@@ -961,6 +1000,7 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 					Start:    "0-0",
 					Count:    1,
 				}).Result()
+				cancel()
 
 				// Check for NOGROUP error on XAutoClaim
 				if err != nil {
@@ -970,7 +1010,7 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 						close(state.messageChan)
 						return
 					}
-					// For other errors, just skip claiming and continue to XReadGroup
+					// For other errors (including context timeout), just skip claiming and continue to XReadGroup
 				}
 
 				if err == nil && len(claimedMsgs) > 0 {
@@ -986,6 +1026,9 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 					continue // Process claimed messages before reading new ones
 				}
 
+				// Create a new context for XReadGroup
+				readCtx, cancel = context.WithTimeout(context.Background(), redisOpTimeout)
+
 				// Read new messages from stream
 				streams, err := s.redisClient.XReadGroup(readCtx, &redis.XReadGroupArgs{
 					Group:    group,
@@ -994,6 +1037,7 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 					Count:    1,
 					Block:    time.Second,
 				}).Result()
+				cancel()
 
 				if err != nil {
 					if err == redis.Nil {
@@ -1015,7 +1059,12 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 
-					log.Printf("Error reading from stream: %v", err)
+					// Check for context deadline exceeded (Redis unavailable)
+					if err == context.DeadlineExceeded || strings.Contains(errMsg, "context deadline exceeded") {
+						log.Printf("Redis operation timed out: %v", err)
+					} else {
+						log.Printf("Error reading from stream: %v", err)
+					}
 					time.Sleep(time.Second)
 					continue
 				}
