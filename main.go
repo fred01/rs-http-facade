@@ -936,6 +936,78 @@ func handleAdmin(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{"streams": streams})
 
+	case "stats":
+		// Get statistics for all streams and their consumer groups
+		type GroupStats struct {
+			Name     string `json:"name"`
+			Pending  int64  `json:"pending"`
+			Lag      int64  `json:"lag"`
+			Consumers int64  `json:"consumers"`
+		}
+		type StreamStats struct {
+			Name   string       `json:"name"`
+			Length int64        `json:"length"`
+			Groups []GroupStats `json:"groups"`
+		}
+
+		// First, find all streams using SCAN
+		var streamNames []string
+		var cursor uint64
+		for {
+			var keys []string
+			var err error
+			keys, cursor, err = redisClient.Scan(ctx, cursor, "*", 100).Result()
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Failed to scan keys: %v", err), http.StatusInternalServerError)
+				return
+			}
+
+			for _, key := range keys {
+				keyType, err := redisClient.Type(ctx, key).Result()
+				if err == nil && keyType == "stream" {
+					streamNames = append(streamNames, key)
+				}
+			}
+
+			if cursor == 0 {
+				break
+			}
+		}
+
+		// Build stats for each stream
+		var stats []StreamStats
+		for _, streamName := range streamNames {
+			streamStat := StreamStats{
+				Name:   streamName,
+				Groups: []GroupStats{},
+			}
+
+			// Get stream length
+			length, err := redisClient.XLen(ctx, streamName).Result()
+			if err == nil {
+				streamStat.Length = length
+			}
+
+			// Get consumer groups for this stream
+			groups, err := redisClient.XInfoGroups(ctx, streamName).Result()
+			if err == nil {
+				for _, group := range groups {
+					groupStat := GroupStats{
+						Name:      group.Name,
+						Pending:   group.Pending,
+						Lag:       group.Lag,
+						Consumers: group.Consumers,
+					}
+					streamStat.Groups = append(streamStat.Groups, groupStat)
+				}
+			}
+
+			stats = append(stats, streamStat)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"streams": stats})
+
 	default:
 		// Try to get stream info if path looks like a stream name
 		if targetPath != "" {

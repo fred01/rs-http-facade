@@ -902,6 +902,83 @@ func TestAdminEndpoints(t *testing.T) {
 			t.Logf("✓ Streams endpoint working correctly: found %d streams", len(streams))
 		}
 	})
+
+	// Test stats
+	t.Run("Stats", func(t *testing.T) {
+		// First publish a message and create a consumer group
+		publishSingleMessage(facadeURL, "stats-test-stream", "test")
+		time.Sleep(500 * time.Millisecond)
+
+		// Start a consumer to create a consumer group
+		consumerCtx, consumerCancel := context.WithCancel(context.Background())
+		go func() {
+			url := fmt.Sprintf("%s/api/events?stream=stats-test-stream&group=stats-test-group", facadeURL)
+			req, _ := http.NewRequestWithContext(consumerCtx, "GET", url, nil)
+			req.Header.Set("Authorization", "Bearer test-token")
+			client := &http.Client{Timeout: 0}
+			resp, err := client.Do(req)
+			if err == nil {
+				defer resp.Body.Close()
+				io.ReadAll(resp.Body)
+			}
+		}()
+
+		time.Sleep(1 * time.Second)
+
+		req, _ := http.NewRequest("GET", facadeURL+"/admin/stats", nil)
+		req.Header.Set("Authorization", "Bearer test-token")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			consumerCancel()
+			t.Fatalf("Failed to get stats: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			consumerCancel()
+			t.Errorf("Expected status 200, got %d", resp.StatusCode)
+		}
+
+		var result map[string]interface{}
+		json.NewDecoder(resp.Body).Decode(&result)
+		streams, ok := result["streams"].([]interface{})
+		if !ok {
+			consumerCancel()
+			t.Errorf("Expected streams array in response")
+			return
+		}
+
+		// Find our test stream
+		var found bool
+		for _, s := range streams {
+			stream := s.(map[string]interface{})
+			if stream["name"] == "stats-test-stream" {
+				found = true
+				length := stream["length"].(float64)
+				if length < 1 {
+					t.Errorf("Expected stream length >= 1, got %v", length)
+				}
+				groups := stream["groups"].([]interface{})
+				if len(groups) > 0 {
+					group := groups[0].(map[string]interface{})
+					if group["name"] != "stats-test-group" {
+						t.Errorf("Expected group name 'stats-test-group', got %v", group["name"])
+					}
+					t.Logf("✓ Stats endpoint working correctly: stream length=%v, group pending=%v, lag=%v, consumers=%v",
+						length, group["pending"], group["lag"], group["consumers"])
+				}
+			}
+		}
+
+		consumerCancel()
+
+		if !found {
+			t.Errorf("Expected to find stats-test-stream in stats")
+		} else {
+			t.Logf("✓ Stats endpoint working correctly")
+		}
+	})
 }
 
 // publishSingleMessage publishes a single message

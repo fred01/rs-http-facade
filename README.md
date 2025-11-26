@@ -324,6 +324,43 @@ Response:
 }
 ```
 
+#### Get Stream Statistics
+
+```http
+GET /admin/stats
+Authorization: Bearer your-secret-token
+```
+
+Returns detailed statistics for all streams and their consumer groups. Useful for monitoring and displaying in web interfaces.
+
+Response:
+```json
+{
+  "streams": [
+    {
+      "name": "orders-stream",
+      "length": 5000,
+      "groups": [
+        {
+          "name": "processor-group",
+          "pending": 25,
+          "lag": 100,
+          "consumers": 3
+        }
+      ]
+    }
+  ]
+}
+```
+
+Fields:
+- `name` - Stream name
+- `length` - Total number of messages in the stream
+- `groups[].name` - Consumer group name
+- `groups[].pending` - Number of pending (unacknowledged) messages
+- `groups[].lag` - Number of messages not yet delivered to the group
+- `groups[].consumers` - Number of active consumers in the group
+
 #### Get Stream Info
 
 ```http

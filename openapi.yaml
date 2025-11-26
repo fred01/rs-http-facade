@@ -515,6 +515,84 @@ paths:
               schema:
                 type: string
 
+  /admin/stats:
+    get:
+      tags:
+        - Admin
+      summary: Get statistics for all streams and consumer groups
+      description: Returns detailed statistics for all streams including their consumer groups, pending messages, and lag. Useful for monitoring and displaying in web interfaces.
+      operationId: adminStats
+      responses:
+        '200':
+          description: Statistics returned successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  streams:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                          description: Stream name
+                          example: my-stream
+                        length:
+                          type: integer
+                          description: Total number of messages in the stream
+                          example: 1000
+                        groups:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              name:
+                                type: string
+                                description: Consumer group name
+                                example: my-group
+                              pending:
+                                type: integer
+                                description: Number of pending (unacknowledged) messages
+                                example: 50
+                              lag:
+                                type: integer
+                                description: Number of messages not yet delivered to the group
+                                example: 100
+                              consumers:
+                                type: integer
+                                description: Number of active consumers in the group
+                                example: 3
+              example:
+                streams:
+                  - name: orders-stream
+                    length: 5000
+                    groups:
+                      - name: processor-group
+                        pending: 25
+                        lag: 100
+                        consumers: 3
+                      - name: analytics-group
+                        pending: 0
+                        lag: 500
+                        consumers: 1
+                  - name: events-stream
+                    length: 10000
+                    groups:
+                      - name: handler-group
+                        pending: 10
+                        lag: 50
+                        consumers: 5
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '500':
+          description: Failed to get statistics
+          content:
+            text/plain:
+              schema:
+                type: string
+
   /admin/{streamName}:
     get:
       tags:
