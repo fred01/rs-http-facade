@@ -56,6 +56,7 @@ type Server struct {
 	bearerTokenHash     [32]byte
 	cleanupTicker       *time.Ticker
 	watchdogTicker      *time.Ticker
+	watchdogStopChan    chan struct{}
 	consumerIDCounter   uint64
 }
 
@@ -144,11 +145,17 @@ func (s *Server) startWatchdogNotifier() {
 	// Notify at half the watchdog interval as recommended by systemd documentation
 	notifyInterval := interval / 2
 	s.watchdogTicker = time.NewTicker(notifyInterval)
+	s.watchdogStopChan = make(chan struct{})
 
 	log.Printf("Systemd watchdog enabled, notifying every %v", notifyInterval)
 
-	for range s.watchdogTicker.C {
-		daemon.SdNotify(false, daemon.SdNotifyWatchdog)
+	for {
+		select {
+		case <-s.watchdogStopChan:
+			return
+		case <-s.watchdogTicker.C:
+			daemon.SdNotify(false, daemon.SdNotifyWatchdog)
+		}
 	}
 }
 
@@ -156,6 +163,9 @@ func (s *Server) startWatchdogNotifier() {
 func (s *Server) Stop() {
 	if s.cleanupTicker != nil {
 		s.cleanupTicker.Stop()
+	}
+	if s.watchdogStopChan != nil {
+		close(s.watchdogStopChan)
 	}
 	if s.watchdogTicker != nil {
 		s.watchdogTicker.Stop()
