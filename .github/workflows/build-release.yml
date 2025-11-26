@@ -9,6 +9,12 @@ on:
   pull_request:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Release version (e.g., v1.0.0). Leave empty for auto-generated version based on commit SHA.'
+        required: false
+        default: ''
 
 env:
   REGISTRY: ghcr.io
@@ -63,10 +69,6 @@ jobs:
           - goos: linux
             goarch: arm64
             suffix: linux-arm64
-          - goos: linux
-            goarch: arm
-            goarm: 7
-            suffix: linux-armv7
           # macOS
           - goos: darwin
             goarch: amd64
@@ -74,13 +76,6 @@ jobs:
           - goos: darwin
             goarch: arm64
             suffix: darwin-arm64
-          # Windows
-          - goos: windows
-            goarch: amd64
-            suffix: windows-amd64.exe
-          - goos: windows
-            goarch: arm64
-            suffix: windows-arm64.exe
 
     steps:
       - name: Checkout code
@@ -108,7 +103,6 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          GOARM: ${{ matrix.goarm }}
           CGO_ENABLED: 0
         run: |
           VERSION=${GITHUB_REF_NAME:-dev}
@@ -182,13 +176,29 @@ jobs:
     name: Create Release
     needs: [build-binaries, build-docker]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     permissions:
       contents: write
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Generate release version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ github.event.inputs.release_version }}" ]]; then
+            VERSION="${{ github.event.inputs.release_version }}"
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            # Auto-generate version for main branch pushes
+            SHORT_SHA="${GITHUB_SHA::8}"
+            DATE=$(date -u '+%Y%m%d')
+            VERSION="v0.0.0-${DATE}-${SHORT_SHA}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Generated version: ${VERSION}"
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -198,24 +208,41 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p release
+          VERSION="${{ steps.version.outputs.version }}"
+          
           for dir in artifacts/rs-http-facade-*; do
             if [ -d "$dir" ]; then
-              cp "$dir"/* release/ || true
+              # Get the binary name from the directory
+              BINARY_NAME=$(basename "$dir")
+              BINARY_FILE=$(find "$dir" -maxdepth 1 -type f -print -quit)
+              
+              if [ -z "$BINARY_FILE" ]; then
+                echo "Warning: No files found in $dir, skipping"
+                continue
+              fi
+              
+              BINARY_FILE=$(basename "$BINARY_FILE")
+              
+              # Create tar.gz archive
+              ARCHIVE_NAME="${BINARY_NAME}-${VERSION}.tar.gz"
+              tar -czvf "release/${ARCHIVE_NAME}" -C "$dir" "$BINARY_FILE"
             fi
           done
           
-          # Create checksums
+          # Create checksums for all files in release directory
           cd release
-          sha256sum rs-http-facade-* > checksums.txt
+          find . -maxdepth 1 -type f ! -name 'checksums.txt' -exec sha256sum {} + > checksums.txt
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Release ${{ steps.version.outputs.version }}
           files: |
-            release/rs-http-facade-*
+            release/*.tar.gz
             release/checksums.txt
           generate_release_notes: true
           draft: false
-          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
