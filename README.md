@@ -10,7 +10,7 @@ A simple HTTP REST facade for Redis Streams written in Go. This service provides
 - **Consumer SSE endpoint** - consume messages in real-time via Server-Sent Events
 - **SSE keepalive** - configurable keepalive comments to maintain long-lived connections
 - **Consumer control** - RDY flow control for consumers
-- **Message lifecycle management** - touch and finish messages with automatic expiry
+- **Message lifecycle management** - finish messages with automatic expiry
 - **Automatic message recovery** - expired messages are automatically claimed by other consumers using `XAUTOCLAIM`
 - **Admin endpoints** - ping, info, stream listing, and statistics
 - **Secure authentication** - constant-time bearer token validation to prevent timing attacks
@@ -250,7 +250,7 @@ This endpoint returns a stream of Server-Sent Events. Each event contains:
 ```
 
 **Important Notes**:
-- Messages received via SSE require explicit acknowledgement. You must explicitly finish or touch each message using the message lifecycle endpoints.
+- Messages received via SSE require explicit acknowledgement. You must explicitly finish each message using the message lifecycle endpoint.
 - **Native Redis Streams load balancing**: Each HTTP client creates its own consumer within the consumer group. When multiple clients connect to the same stream/group, Redis distributes messages across them, just like native Redis Streams clients.
 - This enables horizontal scaling: add more HTTP clients to process messages in parallel.
 - **Keepalive**: The server sends SSE comment lines (`: keepalive`) at a configurable interval (default: 60 seconds) to keep the connection alive.
@@ -294,21 +294,6 @@ Response:
 ```
 
 ### Message Lifecycle Endpoints
-
-#### Touch Message (Extend Timeout)
-
-```http
-POST /api/messages/{message-id}/touch
-Authorization: Bearer your-secret-token
-```
-
-Response:
-```json
-{
-  "status": "ok",
-  "action": "touched"
-}
-```
 
 #### Finish Message (XACK - Mark as Successfully Processed)
 
@@ -532,11 +517,6 @@ The integration tests verify:
 **Message Finish (TestMessageFinish)**:
 - Messages can be acknowledged using XACK
 - Finished messages are removed from the pending entries list
-
-**Message Touch (TestMessageTouch)**:
-- Touch operation extends message timeout
-- Messages can be touched multiple times before finishing
-- Proper timeout extension behavior
 
 **RDY Flow Control (TestRDYControl)**:
 - RDY count can be set via API

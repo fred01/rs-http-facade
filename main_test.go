@@ -297,48 +297,29 @@ func TestHandleConsumerRdyValidation(t *testing.T) {
 	}
 }
 
-func TestHandleMessagesValidation(t *testing.T) {
+func TestHandleFinishRouteValidation(t *testing.T) {
 	server := createTestServer()
 
 	tests := []struct {
 		name           string
-		method         string
-		path           string
+		messageId      string
 		expectedStatus int
 	}{
 		{
-			name:           "Invalid method",
-			method:         "GET",
-			path:           "/api/messages/123-0/finish",
-			expectedStatus: http.StatusMethodNotAllowed,
-		},
-		{
-			name:           "Invalid path",
-			method:         "POST",
-			path:           "/api/messages/123-0",
-			expectedStatus: http.StatusBadRequest,
-		},
-		{
 			name:           "Message not found",
-			method:         "POST",
-			path:           "/api/messages/nonexistent-0/finish",
+			messageId:      "nonexistent-0",
 			expectedStatus: http.StatusNotFound,
-		},
-		{
-			name:           "Invalid action",
-			method:         "POST",
-			path:           "/api/messages/123-0/invalid",
-			expectedStatus: http.StatusNotFound, // Will fail at message lookup first
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(tt.method, tt.path, nil)
+			req := httptest.NewRequest("POST", "/api/messages/"+tt.messageId+"/finish", nil)
 			req.Header.Set("Authorization", "Bearer "+testToken)
+			req.SetPathValue("messageId", tt.messageId)
 
 			rr := httptest.NewRecorder()
-			server.handleMessages(rr, req)
+			server.handleFinishRoute(rr, req)
 
 			if rr.Code != tt.expectedStatus {
 				t.Errorf("expected status %d, got %d", tt.expectedStatus, rr.Code)
@@ -352,25 +333,16 @@ func TestHandleConsumerEventsValidation(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		method         string
 		query          string
 		expectedStatus int
 	}{
 		{
-			name:           "Invalid method",
-			method:         "POST",
-			query:          "stream=test&group=group",
-			expectedStatus: http.StatusMethodNotAllowed,
-		},
-		{
 			name:           "Missing stream",
-			method:         "GET",
 			query:          "group=group",
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
 			name:           "Missing group",
-			method:         "GET",
 			query:          "stream=test",
 			expectedStatus: http.StatusBadRequest,
 		},
@@ -378,7 +350,7 @@ func TestHandleConsumerEventsValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(tt.method, "/api/events?"+tt.query, nil)
+			req := httptest.NewRequest("GET", "/api/events?"+tt.query, nil)
 			req.Header.Set("Authorization", "Bearer "+testToken)
 
 			rr := httptest.NewRecorder()

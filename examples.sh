@@ -55,34 +55,29 @@ MESSAGE_ID="1234567890-0"
 auth_curl -X POST "${API_URL}/api/messages/${MESSAGE_ID}/finish"
 echo -e "\n"
 
-# Example 6: Message lifecycle - touch a message
-echo "6. Touching a message to extend timeout..."
-auth_curl -X POST "${API_URL}/api/messages/${MESSAGE_ID}/touch"
-echo -e "\n"
-
-# Example 7: Access admin API - ping
-echo "7. Checking Redis connection via admin endpoint..."
+# Example 6: Access admin API - ping
+echo "6. Checking Redis connection via admin endpoint..."
 auth_curl -X GET "${API_URL}/admin/ping"
 echo -e "\n"
 
-# Example 8: Access admin API - list streams
-echo "8. Listing all streams..."
+# Example 7: Access admin API - list streams
+echo "7. Listing all streams..."
 auth_curl -X GET "${API_URL}/admin/streams"
 echo -e "\n"
 
-# Example 9: Access admin API - get statistics
-echo "9. Getting statistics for all streams and consumer groups..."
+# Example 8: Access admin API - get statistics
+echo "8. Getting statistics for all streams and consumer groups..."
 auth_curl -X GET "${API_URL}/admin/stats"
 echo -e "\n"
 
-# Example 10: Consume messages via SSE (in background for 10 seconds)
-echo "10. Consuming messages via SSE for 10 seconds..."
+# Example 9: Consume messages via SSE (in background for 10 seconds)
+echo "9. Consuming messages via SSE for 10 seconds..."
 echo "   (Press Ctrl+C to stop earlier)"
 timeout 10s auth_curl -N "${API_URL}/api/events?stream=${STREAM}&group=${GROUP}" || true
 echo -e "\n"
 
-# Example 11: Flush all data (commented out for safety)
-echo "11. Flush all data (CAUTION: deletes all streams and messages)"
+# Example 10: Flush all data (commented out for safety)
+echo "10. Flush all data (CAUTION: deletes all streams and messages)"
 echo "    POST ${API_URL}/admin/flush"
 echo "    Uncomment the line below to execute:"
 # auth_curl -X POST "${API_URL}/admin/flush"

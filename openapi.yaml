@@ -11,7 +11,7 @@ info:
     - Per-client consumers - each HTTP client gets its own Redis consumer for native load balancing
     - Consumer SSE endpoint - consume messages in real-time via Server-Sent Events
     - Consumer control - RDY flow control for consumers
-    - Message lifecycle management - touch and finish messages with automatic expiry
+    - Message lifecycle management - finish messages with automatic expiry
     - Admin endpoints - ping, info, and stream listing
     - Secure authentication - constant-time bearer token validation to prevent timing attacks
   contact:
@@ -34,7 +34,7 @@ tags:
   - name: Consumer
     description: Consuming messages from Redis Streams
   - name: Message Lifecycle
-    description: Message lifecycle management (touch, finish)
+    description: Message lifecycle management (finish)
   - name: Admin
     description: Redis admin operations
 
@@ -303,46 +303,6 @@ paths:
           $ref: '#/components/responses/UnauthorizedError'
         '404':
           description: No consumers found for this stream/group
-          content:
-            text/plain:
-              schema:
-                type: string
-
-  /api/messages/{messageId}/touch:
-    post:
-      tags:
-        - Message Lifecycle
-      summary: Touch message (extend timeout)
-      description: Extends the timeout for the specified message, preventing it from being cleaned up
-      operationId: touchMessage
-      parameters:
-        - name: messageId
-          in: path
-          required: true
-          description: Message ID returned in the SSE event (Redis Stream entry ID format)
-          schema:
-            type: string
-            example: "1234567890123-0"
-      responses:
-        '200':
-          description: Message touched successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/MessageActionResponse'
-              example:
-                status: ok
-                action: touched
-        '401':
-          $ref: '#/components/responses/UnauthorizedError'
-        '404':
-          description: Message not found or already processed
-          content:
-            text/plain:
-              schema:
-                type: string
-        '405':
-          description: Method not allowed
           content:
             text/plain:
               schema:
@@ -751,7 +711,6 @@ components:
         action:
           type: string
           enum:
-            - touched
             - finished
           example: finished
 
