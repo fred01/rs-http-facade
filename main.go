@@ -55,7 +55,6 @@ type Server struct {
 	activeMessagesMutex sync.RWMutex
 	bearerTokenHash     [32]byte
 	cleanupTicker       *time.Ticker
-	watchdogTicker      *time.Ticker
 	watchdogStopChan    chan struct{}
 	consumerIDCounter   uint64
 }
@@ -100,6 +99,7 @@ func (s *Server) Start() error {
 
 	// Start systemd watchdog notification if enabled
 	// This prevents systemd from killing the service due to watchdog timeout
+	s.watchdogStopChan = make(chan struct{})
 	go s.startWatchdogNotifier()
 
 	// Setup HTTP routes using Go 1.22+ method-based routing patterns
@@ -144,8 +144,8 @@ func (s *Server) startWatchdogNotifier() {
 
 	// Notify at half the watchdog interval as recommended by systemd documentation
 	notifyInterval := interval / 2
-	s.watchdogTicker = time.NewTicker(notifyInterval)
-	s.watchdogStopChan = make(chan struct{})
+	ticker := time.NewTicker(notifyInterval)
+	defer ticker.Stop()
 
 	log.Printf("Systemd watchdog enabled, notifying every %v", notifyInterval)
 
@@ -153,7 +153,7 @@ func (s *Server) startWatchdogNotifier() {
 		select {
 		case <-s.watchdogStopChan:
 			return
-		case <-s.watchdogTicker.C:
+		case <-ticker.C:
 			daemon.SdNotify(false, daemon.SdNotifyWatchdog)
 		}
 	}
@@ -166,9 +166,6 @@ func (s *Server) Stop() {
 	}
 	if s.watchdogStopChan != nil {
 		close(s.watchdogStopChan)
-	}
-	if s.watchdogTicker != nil {
-		s.watchdogTicker.Stop()
 	}
 	if s.redisClient != nil {
 		s.redisClient.Close()
@@ -439,7 +436,7 @@ func (s *Server) handleAddRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx := r.Context()
 	id, err := s.redisClient.XAdd(ctx, &redis.XAddArgs{
 		Stream: stream,
 		Values: map[string]interface{}{"data": string(msg.Data)},
@@ -473,7 +470,7 @@ func (s *Server) handleBatchAddRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx := r.Context()
 	pipe := s.redisClient.Pipeline()
 
 	for _, m := range msg.Messages {
@@ -515,7 +512,7 @@ func (s *Server) handleFinishRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx := r.Context()
 	_, err := s.redisClient.XAck(ctx, msgWithExpiry.stream, msgWithExpiry.group, msgWithExpiry.messageID).Result()
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to acknowledge message: %v", err), http.StatusInternalServerError)
@@ -628,7 +625,7 @@ func (s *Server) handleConsumerRdyRoute(w http.ResponseWriter, r *http.Request) 
 
 // handleAdminPing handles GET /admin/ping
 func (s *Server) handleAdminPing(w http.ResponseWriter, r *http.Request) {
-	ctx := context.Background()
+	ctx := r.Context()
 	result, err := s.redisClient.Ping(ctx).Result()
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Redis ping failed: %v", err), http.StatusInternalServerError)
@@ -640,7 +637,7 @@ func (s *Server) handleAdminPing(w http.ResponseWriter, r *http.Request) {
 
 // handleAdminInfo handles GET /admin/info
 func (s *Server) handleAdminInfo(w http.ResponseWriter, r *http.Request) {
-	ctx := context.Background()
+	ctx := r.Context()
 	result, err := s.redisClient.Info(ctx).Result()
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Redis info failed: %v", err), http.StatusInternalServerError)
@@ -652,7 +649,7 @@ func (s *Server) handleAdminInfo(w http.ResponseWriter, r *http.Request) {
 
 // handleAdminStreams handles GET /admin/streams
 func (s *Server) handleAdminStreams(w http.ResponseWriter, r *http.Request) {
-	ctx := context.Background()
+	ctx := r.Context()
 	var streams []string
 	var cursor uint64
 	for {
@@ -682,7 +679,7 @@ func (s *Server) handleAdminStreams(w http.ResponseWriter, r *http.Request) {
 
 // handleAdminFlush handles POST /admin/flush
 func (s *Server) handleAdminFlush(w http.ResponseWriter, r *http.Request) {
-	ctx := context.Background()
+	ctx := r.Context()
 	err := s.redisClient.FlushDB(ctx).Err()
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to flush database: %v", err), http.StatusInternalServerError)
@@ -706,7 +703,7 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 		Groups []GroupStats `json:"groups"`
 	}
 
-	ctx := context.Background()
+	ctx := r.Context()
 	var streamNames []string
 	var cursor uint64
 	for {
@@ -770,7 +767,7 @@ func (s *Server) handleAdminStreamInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx := r.Context()
 	info, err := s.redisClient.XInfoStream(ctx, streamName).Result()
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to get stream info: %v", err), http.StatusNotFound)
@@ -808,7 +805,7 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request, stream string
 		return
 	}
 
-	ctx := context.Background()
+	ctx := r.Context()
 	id, err := s.redisClient.XAdd(ctx, &redis.XAddArgs{
 		Stream: stream,
 		Values: map[string]interface{}{"data": string(msg.Data)},
@@ -841,7 +838,7 @@ func (s *Server) handleBatchAdd(w http.ResponseWriter, r *http.Request, stream s
 		return
 	}
 
-	ctx := context.Background()
+	ctx := r.Context()
 	pipe := s.redisClient.Pipeline()
 
 	for _, m := range msg.Messages {
