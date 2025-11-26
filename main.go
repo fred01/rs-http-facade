@@ -962,6 +962,17 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 					Count:    1,
 				}).Result()
 
+				// Check for NOGROUP error on XAutoClaim
+				if err != nil {
+					errMsg := err.Error()
+					if strings.Contains(errMsg, "NOGROUP") {
+						log.Printf("Fatal error in XAutoClaim (stream/group deleted): %v - closing connection", err)
+						close(state.messageChan)
+						return
+					}
+					// For other errors, just skip claiming and continue to XReadGroup
+				}
+
 				if err == nil && len(claimedMsgs) > 0 {
 					for _, msg := range claimedMsgs {
 						log.Printf("Claimed idle message %s from pending list", msg.ID)
@@ -994,6 +1005,16 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 						return
 					default:
 					}
+
+					// Check if error is NOGROUP (stream or consumer group was deleted)
+					errMsg := err.Error()
+					if strings.Contains(errMsg, "NOGROUP") {
+						log.Printf("Fatal error (stream/group deleted): %v - closing connection", err)
+						// Close messageChan to signal SSE handler to terminate connection
+						close(state.messageChan)
+						return
+					}
+
 					log.Printf("Error reading from stream: %v", err)
 					time.Sleep(time.Second)
 					continue
