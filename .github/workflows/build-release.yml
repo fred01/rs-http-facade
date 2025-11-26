@@ -200,10 +200,11 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Generated version: ${VERSION}"
 
-      - name: Download all artifacts
+      - name: Download binary artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: rs-http-facade-*
 
       - name: Prepare release assets
         run: |
