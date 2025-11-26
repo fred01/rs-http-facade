@@ -63,6 +63,65 @@ This will start:
 - Redis (port 6379)
 - Redis Streams HTTP Facade (port 8080)
 
+### Production Deployment
+
+For production deployments, use the `docker-compose.prod.yml` file which includes:
+- Redis configured with AOF+RDB persistence for maximum reliability
+- Health checks for all services
+- Resource limits (CPU/memory)
+- Automatic restart policies
+- Security hardening (no-new-privileges)
+- Structured logging with rotation
+
+1. Review and customize `redis.conf` for your needs:
+```bash
+# Set a password (uncomment and modify in redis.conf)
+# requirepass your-strong-redis-password
+
+# Adjust memory limits
+# maxmemory 4gb
+```
+
+2. Create external storage directory (optional):
+```bash
+mkdir -p /mnt/redis-data
+```
+
+3. Start production services:
+```bash
+docker-compose -f docker-compose.prod.yml up -d
+```
+
+### Pre-built Docker Images
+
+Pre-built multi-architecture Docker images (amd64, arm64) are available from GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/fred01/rs-http-facade:latest
+
+# Or specific version
+docker pull ghcr.io/fred01/rs-http-facade:v1.0.0
+```
+
+### Binary Releases
+
+Pre-built binaries for multiple platforms are available on the [Releases page](https://github.com/fred01/rs-http-facade/releases):
+
+- Linux: amd64, arm64, armv7
+- macOS: amd64, arm64 (Apple Silicon)
+- Windows: amd64, arm64
+
+Download and run:
+```bash
+# Linux/macOS
+wget https://github.com/fred01/rs-http-facade/releases/latest/download/rs-http-facade-linux-amd64
+chmod +x rs-http-facade-linux-amd64
+./rs-http-facade-linux-amd64 -bearer-token=your-token -redis-address=localhost:6379
+
+# Verify checksum
+sha256sum -c checksums.txt
+```
+
 ## Usage
 
 Start the HTTP facade:
