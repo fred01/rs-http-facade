@@ -948,6 +948,20 @@ break
 w.Header().Set("Content-Type", "application/json")
 json.NewEncoder(w).Encode(map[string]interface{}{"streams": streams})
 
+case "flush":
+// Flush all data from Redis using FLUSHDB
+if r.Method != http.MethodPost {
+http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+return
+}
+err := s.redisClient.FlushDB(ctx).Err()
+if err != nil {
+http.Error(w, fmt.Sprintf("Failed to flush database: %v", err), http.StatusInternalServerError)
+return
+}
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]string{"status": "ok", "action": "flushed"})
+
 case "stats":
 // Get statistics for all streams and their consumer groups
 type GroupStats struct {

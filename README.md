@@ -401,6 +401,23 @@ Fields:
 - `groups[].lag` - Number of messages not yet delivered to the group
 - `groups[].consumers` - Number of active consumers in the group
 
+#### Flush All Data
+
+```http
+POST /admin/flush
+Authorization: Bearer your-secret-token
+```
+
+Flushes all data from the Redis database. **Use with caution** - this permanently deletes all streams and messages.
+
+Response:
+```json
+{
+  "status": "ok",
+  "action": "flushed"
+}
+```
+
 #### Get Stream Info
 
 ```http

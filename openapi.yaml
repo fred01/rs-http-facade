@@ -544,6 +544,42 @@ paths:
               schema:
                 type: string
 
+  /admin/flush:
+    post:
+      tags:
+        - Admin
+      summary: Flush all data
+      description: Flushes all data from the Redis database (FLUSHDB). Use with caution - this permanently deletes all streams and messages.
+      operationId: adminFlush
+      responses:
+        '200':
+          description: Database flushed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  action:
+                    type: string
+                    example: flushed
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '405':
+          description: Method not allowed (use POST)
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: Failed to flush database
+          content:
+            text/plain:
+              schema:
+                type: string
+
   /admin/{streamName}:
     get:
       tags:

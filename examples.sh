@@ -81,6 +81,13 @@ echo "   (Press Ctrl+C to stop earlier)"
 timeout 10s auth_curl -N "${API_URL}/api/events?stream=${STREAM}&group=${GROUP}" || true
 echo -e "\n"
 
+# Example 11: Flush all data (commented out for safety)
+echo "11. Flush all data (CAUTION: deletes all streams and messages)"
+echo "    POST ${API_URL}/admin/flush"
+echo "    Uncomment the line below to execute:"
+# auth_curl -X POST "${API_URL}/admin/flush"
+echo -e "\n"
+
 echo "=== Examples Complete ==="
 echo ""
 echo "To consume messages continuously, run:"
