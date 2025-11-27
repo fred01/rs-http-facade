@@ -44,17 +44,17 @@ var (
 	messageExpiryDuration = 5 * time.Minute
 )
 
+// Redis key prefix for active messages (stateless storage)
+const activeMessageKeyPrefix = "rs-http-facade:active-msg:"
+
 // Server encapsulates all application state and dependencies
 type Server struct {
-	config              AppConfig
-	redisClient         *redis.Client
-	consumers           map[string]*consumerState
-	consumersMutex      sync.RWMutex
-	activeMessages      map[string]*messageWithExpiry
-	activeMessagesMutex sync.RWMutex
-	bearerTokenHash     [32]byte
-	cleanupTicker       *time.Ticker
-	consumerIDCounter   uint64
+	config            AppConfig
+	redisClient       *redis.Client
+	consumers         map[string]*consumerState
+	consumersMutex    sync.RWMutex
+	bearerTokenHash   [32]byte
+	consumerIDCounter uint64
 }
 
 // NewServer creates a new Server instance with the given configuration
@@ -82,7 +82,6 @@ func NewServer(config AppConfig) (*Server, error) {
 		config:          config,
 		redisClient:     redisClient,
 		consumers:       make(map[string]*consumerState),
-		activeMessages:  make(map[string]*messageWithExpiry),
 		bearerTokenHash: bearerTokenHash,
 	}
 
@@ -91,10 +90,6 @@ func NewServer(config AppConfig) (*Server, error) {
 
 // Start begins the background tasks and HTTP server
 func (s *Server) Start() error {
-	// Start background cleanup for expired messages
-	s.cleanupTicker = time.NewTicker(30 * time.Second)
-	go s.cleanupExpiredMessages()
-
 	// Setup HTTP routes using Go 1.22+ method-based routing patterns
 	mux := http.NewServeMux()
 
@@ -125,9 +120,6 @@ func (s *Server) Start() error {
 
 // Stop gracefully stops the server
 func (s *Server) Stop() {
-	if s.cleanupTicker != nil {
-		s.cleanupTicker.Stop()
-	}
 	if s.redisClient != nil {
 		s.redisClient.Close()
 	}
@@ -267,13 +259,12 @@ func validateConfig(cfg AppConfig) error {
 	return nil
 }
 
-// messageWithExpiry wraps a Redis Stream message with an expiry time
-type messageWithExpiry struct {
-	stream      string
-	group       string
-	messageID   string
-	consumerKey string
-	expiry      time.Time
+// activeMessageInfo stores message metadata in Redis for stateless operation.
+// This allows the service to be restarted without losing track of pending messages.
+type activeMessageInfo struct {
+	Stream      string `json:"stream"`
+	Group       string `json:"group"`
+	ConsumerKey string `json:"consumer_key"`
 }
 
 // consumerState tracks the state of an SSE consumer
@@ -333,26 +324,6 @@ func main() {
 
 	if err := server.Start(); err != nil {
 		log.Fatalf("Failed to start HTTP server: %v", err)
-	}
-}
-
-// cleanupExpiredMessages removes expired messages from the activeMessages map
-// Expired messages are NOT acknowledged - they remain in the pending list
-// with idle time, allowing other consumers to claim them via XCLAIM
-func (s *Server) cleanupExpiredMessages() {
-	for range s.cleanupTicker.C {
-		now := time.Now()
-		s.activeMessagesMutex.Lock()
-		for id, msgWithExpiry := range s.activeMessages {
-			if now.After(msgWithExpiry.expiry) {
-				// Message expired - remove from our tracking but DO NOT XACK
-				// This leaves the message in the pending entries list (PEL)
-				// with idle time, allowing other consumers to claim it
-				log.Printf("Message expired (not acked, available for reclaim): %s", id)
-				delete(s.activeMessages, id)
-			}
-		}
-		s.activeMessagesMutex.Unlock()
 	}
 }
 
@@ -464,32 +435,42 @@ func (s *Server) handleFinishRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.activeMessagesMutex.RLock()
-	msgWithExpiry, exists := s.activeMessages[messageID]
-	s.activeMessagesMutex.RUnlock()
+	ctx := context.Background()
 
-	if !exists {
+	// Get message info from Redis
+	key := activeMessageKeyPrefix + messageID
+	data, err := s.redisClient.Get(ctx, key).Result()
+	if err == redis.Nil {
 		http.Error(w, "Message not found or already processed", http.StatusNotFound)
 		return
 	}
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to get message info: %v", err), http.StatusInternalServerError)
+		return
+	}
 
-	ctx := context.Background()
-	_, err := s.redisClient.XAck(ctx, msgWithExpiry.stream, msgWithExpiry.group, msgWithExpiry.messageID).Result()
+	var msgInfo activeMessageInfo
+	if err := json.Unmarshal([]byte(data), &msgInfo); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to parse message info: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Acknowledge the message in Redis Stream
+	_, err = s.redisClient.XAck(ctx, msgInfo.Stream, msgInfo.Group, messageID).Result()
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to acknowledge message: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	// Update consumer stats
+	// Delete the message info from Redis
+	s.redisClient.Del(ctx, key)
+
+	// Update consumer stats (if consumer is still connected)
 	s.consumersMutex.RLock()
-	if consumer, ok := s.consumers[msgWithExpiry.consumerKey]; ok {
+	if consumer, ok := s.consumers[msgInfo.ConsumerKey]; ok {
 		atomic.AddInt64(&consumer.finished, 1)
 	}
 	s.consumersMutex.RUnlock()
-
-	s.activeMessagesMutex.Lock()
-	delete(s.activeMessages, messageID)
-	s.activeMessagesMutex.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -1064,16 +1045,28 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// Store message for lifecycle management
-			s.activeMessagesMutex.Lock()
-			s.activeMessages[msg.ID] = &messageWithExpiry{
-				stream:      stream,
-				group:       group,
-				messageID:   msg.ID,
-				consumerKey: consumerKey,
-				expiry:      time.Now().Add(messageExpiryDuration),
+			// Store message info in Redis for stateless operation
+			// This allows the service to be restarted without losing message tracking
+			msgInfo := activeMessageInfo{
+				Stream:      stream,
+				Group:       group,
+				ConsumerKey: consumerKey,
 			}
-			s.activeMessagesMutex.Unlock()
+			msgInfoJSON, err := json.Marshal(msgInfo)
+			if err != nil {
+				log.Printf("Failed to marshal message info: %v", err)
+				continue
+			}
+
+			key := activeMessageKeyPrefix + msg.ID
+			// Set message info with TTL equal to messageExpiryDuration
+			// When TTL expires, Redis automatically deletes the key,
+			// leaving the message in PEL for reclaim via XCLAIM
+			err = s.redisClient.Set(ctx, key, msgInfoJSON, messageExpiryDuration).Err()
+			if err != nil {
+				log.Printf("Failed to store message info in Redis: %v", err)
+				continue
+			}
 
 			// Get the data field from the message
 			var body interface{}
@@ -1098,9 +1091,7 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 			jsonData, err := json.Marshal(data)
 			if err != nil {
 				log.Printf("Failed to marshal message: %v", err)
-				s.activeMessagesMutex.Lock()
-				delete(s.activeMessages, msg.ID)
-				s.activeMessagesMutex.Unlock()
+				s.redisClient.Del(ctx, key)
 				continue
 			}
 
