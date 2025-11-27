@@ -445,25 +445,31 @@ func (s *Server) handleFinishRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get message info: %v", err), http.StatusInternalServerError)
+		log.Printf("Failed to get message info from Redis: %v", err)
+		http.Error(w, "Failed to retrieve message information", http.StatusInternalServerError)
 		return
 	}
 
 	var msgInfo activeMessageInfo
 	if err := json.Unmarshal([]byte(data), &msgInfo); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to parse message info: %v", err), http.StatusInternalServerError)
+		log.Printf("Failed to parse message info: %v", err)
+		http.Error(w, "Invalid message data format", http.StatusInternalServerError)
 		return
 	}
 
 	// Acknowledge the message in Redis Stream
 	_, err = s.redisClient.XAck(ctx, msgInfo.Stream, msgInfo.Group, messageID).Result()
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to acknowledge message: %v", err), http.StatusInternalServerError)
+		log.Printf("Failed to acknowledge message: %v", err)
+		http.Error(w, "Failed to acknowledge message", http.StatusInternalServerError)
 		return
 	}
 
 	// Delete the message info from Redis
-	s.redisClient.Del(ctx, key)
+	if err := s.redisClient.Del(ctx, key).Err(); err != nil {
+		log.Printf("Failed to delete message info from Redis: %v", err)
+		// Continue anyway - message was already acknowledged
+	}
 
 	// Update consumer stats (if consumer is still connected)
 	s.consumersMutex.RLock()
@@ -1091,7 +1097,9 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 			jsonData, err := json.Marshal(data)
 			if err != nil {
 				log.Printf("Failed to marshal message: %v", err)
-				s.redisClient.Del(ctx, key)
+				if delErr := s.redisClient.Del(ctx, key).Err(); delErr != nil {
+					log.Printf("Failed to delete message info from Redis: %v", delErr)
+				}
 				continue
 			}
 
