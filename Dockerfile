@@ -33,10 +33,19 @@ LABEL org.opencontainers.image.licenses="MIT"
 
 RUN apk --no-cache add ca-certificates wget
 
-WORKDIR /root/
+# Create a non-root user and group for security
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+WORKDIR /home/appuser
 
 # Copy the binary from builder
 COPY --from=builder /app/rs-http-facade .
+
+# Set ownership to non-root user
+RUN chown appuser:appgroup rs-http-facade
+
+# Switch to the non-root user
+USER appuser
 
 # Expose HTTP port
 EXPOSE 8080
