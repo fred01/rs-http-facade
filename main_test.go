@@ -7,23 +7,33 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 )
 
 const testToken = "test-bearer-token"
 
-// createTestServer creates a Server instance for testing
+// createTestServer creates a Server instance for testing with miniredis
 func createTestServer() *Server {
+	// Start miniredis for testing
+	mr, _ := miniredis.Run()
+
 	config := AppConfig{
-		RedisAddress:            "localhost:6379",
+		RedisAddress:            mr.Addr(),
 		HTTPAddress:             ":8080",
 		BearerToken:             testToken,
 		SSEKeepaliveIntervalSec: 60,
 	}
 
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: mr.Addr(),
+	})
+
 	return &Server{
 		config:          config,
+		redisClient:     redisClient,
 		consumers:       make(map[string]*consumerState),
-		activeMessages:  make(map[string]*messageWithExpiry),
 		bearerTokenHash: sha256.Sum256([]byte(testToken)),
 	}
 }

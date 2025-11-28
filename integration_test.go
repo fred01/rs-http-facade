@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
@@ -288,13 +289,6 @@ func startFacadeServer(t *testing.T, redisAddr string) (int, func()) {
 			delete(server.consumers, key)
 		}
 		server.consumersMutex.Unlock()
-
-		// Clean up active messages
-		server.activeMessagesMutex.Lock()
-		for key := range server.activeMessages {
-			delete(server.activeMessages, key)
-		}
-		server.activeMessagesMutex.Unlock()
 
 		// Stop the server
 		server.Stop()
@@ -891,4 +885,222 @@ func publishSingleMessage(facadeURL, stream, data string) error {
 	}
 
 	return nil
+}
+
+// TestServiceRestartSurvival tests that the service survives a restart
+// and can still finish messages that were delivered before the restart.
+// This test validates the stateless design where all message tracking
+// is stored in Redis rather than in-memory.
+func TestServiceRestartSurvival(t *testing.T) {
+	ctx := context.Background()
+
+	// Start Redis container (this will persist through the restart)
+	redisContainer, redisAddress, err := startRedis(ctx, t)
+	if err != nil {
+		t.Fatalf("Failed to start Redis: %v", err)
+	}
+	defer redisContainer.Terminate(ctx)
+
+	// Start our HTTP facade server (first instance)
+	facadePort, stopFacade1 := startFacadeServer(t, redisAddress)
+	facadeURL := fmt.Sprintf("http://localhost:%d", facadePort)
+
+	stream := "restart-test-stream"
+	group := "restart-test-group"
+
+	// Publish a message
+	err = publishSingleMessage(facadeURL, stream, "test-message-for-restart")
+	if err != nil {
+		t.Fatalf("Failed to publish message: %v", err)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	// Start a consumer and receive the message (but don't finish it yet)
+	url := fmt.Sprintf("%s/api/events?stream=%s&group=%s", facadeURL, stream, group)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer test-token")
+
+	client := &http.Client{Timeout: 0}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Failed to connect to SSE: %v", err)
+	}
+
+	// Read the message
+	var messageID string
+	scanner := bufio.NewScanner(resp.Body)
+	timeout := time.After(10 * time.Second)
+	messageChan := make(chan string, 1)
+
+	go func() {
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "data: ") {
+				data := strings.TrimPrefix(line, "data: ")
+				var msg map[string]interface{}
+				if err := json.Unmarshal([]byte(data), &msg); err != nil {
+					continue
+				}
+				if id, ok := msg["id"].(string); ok {
+					messageChan <- id
+					return
+				}
+			}
+		}
+	}()
+
+	select {
+	case messageID = <-messageChan:
+		t.Logf("Received message with ID: %s", messageID)
+	case <-timeout:
+		resp.Body.Close()
+		t.Fatal("Timeout waiting for message")
+	}
+
+	// Close the SSE connection (simulates consumer disconnect)
+	resp.Body.Close()
+	time.Sleep(500 * time.Millisecond)
+
+	// Create a direct Redis client to verify message status
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: redisAddress,
+	})
+	defer redisClient.Close()
+
+	// VERIFY: Message info should exist in Redis after delivery (before restart)
+	redisKey := activeMessageKeyPrefix + messageID
+	msgInfoData, err := redisClient.Get(ctx, redisKey).Result()
+	if err == redis.Nil {
+		t.Fatalf("Message info NOT found in Redis after delivery - key: %s", redisKey)
+	} else if err != nil {
+		t.Fatalf("Failed to get message info from Redis: %v", err)
+	}
+	t.Logf("✓ Message info exists in Redis: %s", msgInfoData)
+
+	// Verify the message info contains expected fields
+	var msgInfo activeMessageInfo
+	if err := json.Unmarshal([]byte(msgInfoData), &msgInfo); err != nil {
+		t.Fatalf("Failed to parse message info from Redis: %v", err)
+	}
+	if msgInfo.Stream != stream {
+		t.Errorf("Expected stream %s, got %s", stream, msgInfo.Stream)
+	}
+	if msgInfo.Group != group {
+		t.Errorf("Expected group %s, got %s", group, msgInfo.Group)
+	}
+	t.Log("✓ Message info in Redis has correct stream and group")
+
+	// STOP the first server instance (simulate restart)
+	t.Log("Stopping first server instance...")
+	stopFacade1()
+	time.Sleep(1 * time.Second)
+
+	// VERIFY: Message info should STILL exist in Redis after server restart
+	msgInfoData, err = redisClient.Get(ctx, redisKey).Result()
+	if err == redis.Nil {
+		t.Fatalf("Message info was lost from Redis after server restart!")
+	} else if err != nil {
+		t.Fatalf("Failed to get message info from Redis after restart: %v", err)
+	}
+	t.Log("✓ Message info persists in Redis after server restart")
+
+	// START a new server instance on a different port (simulate restart)
+	t.Log("Starting new server instance (simulating restart)...")
+	facadePort2, stopFacade2 := startFacadeServerOnPort(t, redisAddress, facadePort+100)
+	defer stopFacade2()
+
+	facadeURL2 := fmt.Sprintf("http://localhost:%d", facadePort2)
+
+	// Try to finish the message using the NEW server instance
+	// This should work because the message info is stored in Redis, not in-memory
+	finishURL := fmt.Sprintf("%s/api/messages/%s/finish", facadeURL2, messageID)
+	finishReq, err := http.NewRequest("POST", finishURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create finish request: %v", err)
+	}
+	finishReq.Header.Set("Authorization", "Bearer test-token")
+
+	finishResp, err := http.DefaultClient.Do(finishReq)
+	if err != nil {
+		t.Fatalf("Failed to finish message: %v", err)
+	}
+	defer finishResp.Body.Close()
+
+	if finishResp.StatusCode != http.StatusOK {
+		body, readErr := io.ReadAll(finishResp.Body)
+		if readErr != nil {
+			t.Errorf("Expected status 200, got %d. Reading response body failed: %v", finishResp.StatusCode, readErr)
+		} else {
+			t.Errorf("Expected status 200, got %d: %s", finishResp.StatusCode, string(body))
+		}
+	} else {
+		t.Log("✓ Successfully finished message after service restart!")
+	}
+
+	// VERIFY: Message info should be DELETED from Redis after finish
+	_, err = redisClient.Get(ctx, redisKey).Result()
+	if err == redis.Nil {
+		t.Log("✓ Message info correctly deleted from Redis after finish")
+	} else if err != nil {
+		t.Fatalf("Failed to check message info deletion from Redis: %v", err)
+	} else {
+		t.Errorf("Message info should have been deleted from Redis after finish, but it still exists")
+	}
+
+	t.Log("✓ Service restart survival test PASSED - service is stateless!")
+}
+
+// startFacadeServerOnPort starts the HTTP facade server on a specific port
+func startFacadeServerOnPort(t *testing.T, redisAddr string, port int) (int, func()) {
+	// Create server configuration
+	config := AppConfig{
+		RedisAddress:            redisAddr,
+		RedisPassword:           "",
+		RedisDB:                 0,
+		HTTPAddress:             fmt.Sprintf(":%d", port),
+		BearerToken:             "test-token",
+		SSEKeepaliveIntervalSec: 60,
+	}
+
+	// Create server instance
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+
+	// Start server in background
+	go func() {
+		if err := server.Start(); err != nil && err != http.ErrServerClosed {
+			t.Logf("Server error: %v", err)
+		}
+	}()
+
+	// Wait for server to be ready
+	time.Sleep(1 * time.Second)
+
+	t.Logf("Facade server started on port %d", port)
+
+	stopFunc := func() {
+		// Stop all consumers
+		server.consumersMutex.Lock()
+		for key, consumer := range server.consumers {
+			select {
+			case <-consumer.stopChan:
+				// Already closed
+			default:
+				close(consumer.stopChan)
+			}
+			delete(server.consumers, key)
+		}
+		server.consumersMutex.Unlock()
+
+		// Stop the server
+		server.Stop()
+	}
+
+	return port, stopFunc
 }
