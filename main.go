@@ -435,7 +435,7 @@ func (s *Server) handleFinishRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx := r.Context()
 
 	// Get message info from Redis
 	key := activeMessageKeyPrefix + messageID
@@ -1068,7 +1068,7 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 			// Set message info with TTL equal to messageExpiryDuration
 			// When TTL expires, Redis automatically deletes the key,
 			// leaving the message in PEL for reclaim via XCLAIM
-			err = s.redisClient.Set(ctx, key, msgInfoJSON, messageExpiryDuration).Err()
+			err = s.redisClient.Set(requestCtx, key, msgInfoJSON, messageExpiryDuration).Err()
 			if err != nil {
 				log.Printf("Failed to store message info in Redis: %v", err)
 				continue
@@ -1097,7 +1097,7 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 			jsonData, err := json.Marshal(data)
 			if err != nil {
 				log.Printf("Failed to marshal message: %v", err)
-				if delErr := s.redisClient.Del(ctx, key).Err(); delErr != nil {
+				if delErr := s.redisClient.Del(requestCtx, key).Err(); delErr != nil {
 					log.Printf("Failed to delete message info from Redis: %v", delErr)
 				}
 				continue

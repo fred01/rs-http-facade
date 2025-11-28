@@ -918,7 +918,10 @@ func TestServiceRestartSurvival(t *testing.T) {
 
 	// Start a consumer and receive the message (but don't finish it yet)
 	url := fmt.Sprintf("%s/api/events?stream=%s&group=%s", facadeURL, stream, group)
-	req, _ := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
 	req.Header.Set("Authorization", "Bearer test-token")
 
 	client := &http.Client{Timeout: 0}
@@ -939,7 +942,9 @@ func TestServiceRestartSurvival(t *testing.T) {
 			if strings.HasPrefix(line, "data: ") {
 				data := strings.TrimPrefix(line, "data: ")
 				var msg map[string]interface{}
-				json.Unmarshal([]byte(data), &msg)
+				if err := json.Unmarshal([]byte(data), &msg); err != nil {
+					continue
+				}
 				if id, ok := msg["id"].(string); ok {
 					messageChan <- id
 					return
@@ -1013,7 +1018,10 @@ func TestServiceRestartSurvival(t *testing.T) {
 	// Try to finish the message using the NEW server instance
 	// This should work because the message info is stored in Redis, not in-memory
 	finishURL := fmt.Sprintf("%s/api/messages/%s/finish", facadeURL2, messageID)
-	finishReq, _ := http.NewRequest("POST", finishURL, nil)
+	finishReq, err := http.NewRequest("POST", finishURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create finish request: %v", err)
+	}
 	finishReq.Header.Set("Authorization", "Bearer test-token")
 
 	finishResp, err := http.DefaultClient.Do(finishReq)
@@ -1023,8 +1031,12 @@ func TestServiceRestartSurvival(t *testing.T) {
 	defer finishResp.Body.Close()
 
 	if finishResp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(finishResp.Body)
-		t.Errorf("Expected status 200, got %d: %s", finishResp.StatusCode, string(body))
+		body, readErr := io.ReadAll(finishResp.Body)
+		if readErr != nil {
+			t.Errorf("Expected status 200, got %d. Reading response body failed: %v", finishResp.StatusCode, readErr)
+		} else {
+			t.Errorf("Expected status 200, got %d: %s", finishResp.StatusCode, string(body))
+		}
 	} else {
 		t.Log("✓ Successfully finished message after service restart!")
 	}
