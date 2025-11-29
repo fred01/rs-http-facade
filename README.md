@@ -7,9 +7,8 @@ A simple HTTP REST facade for Redis Streams written in Go. This service provides
 - **REST API** for Redis Streams operations
 - **Producer endpoints** (XADD) - publish single or multiple messages
 - **Per-client consumers** - each HTTP client gets its own Redis consumer for native load balancing
-- **Consumer SSE endpoint** - consume messages in real-time via Server-Sent Events
+- **Consumer SSE endpoint** - consume messages in real-time via Server-Sent Events with configurable in-flight message limit
 - **SSE keepalive** - configurable keepalive comments to maintain long-lived connections
-- **Consumer control** - RDY flow control for consumers
 - **Message lifecycle management** - finish messages with automatic expiry
 - **Automatic message recovery** - expired messages are automatically claimed by other consumers using `XAUTOCLAIM`
 - **Admin endpoints** - ping, info, stream listing, and statistics
@@ -255,26 +254,6 @@ This endpoint returns a stream of Server-Sent Events. Each event contains:
 - This enables horizontal scaling: add more HTTP clients to process messages in parallel.
 - **Keepalive**: The server sends SSE comment lines (`: keepalive`) at a configurable interval (default: 60 seconds) to keep the connection alive.
 
-#### Set Consumer RDY Count
-
-```http
-POST /api/consumers/{stream}/{group}/rdy
-Content-Type: application/json
-Authorization: Bearer your-secret-token
-
-{
-  "count": 5
-}
-```
-
-Response:
-```json
-{
-  "status": "ok",
-  "consumers": 2
-}
-```
-
 #### Get Consumer Status
 
 ```http
@@ -517,13 +496,6 @@ The integration tests verify:
 **Message Finish (TestMessageFinish)**:
 - Messages can be acknowledged using XACK
 - Finished messages are removed from the pending entries list
-
-**RDY Flow Control (TestRDYControl)**:
-- RDY count can be set via API
-- Verifies messages are delivered according to RDY count (e.g., RDY=5 delivers ~5 messages)
-- After finishing messages, more messages are delivered up to RDY limit
-- Consumer status endpoint returns correct information
-- Flow control applies to all consumers for a stream/group
 
 **SSE Connection Close (TestSSEConnectionClose)**:
 - SSE connections can be gracefully closed

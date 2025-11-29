@@ -102,7 +102,6 @@ func (s *Server) Start() error {
 	// Consumer endpoints
 	mux.HandleFunc("GET /api/events", s.authMiddleware(s.handleConsumerEvents))
 	mux.HandleFunc("GET /api/consumers/{stream}/{group}", s.authMiddleware(s.handleConsumerStatusRoute))
-	mux.HandleFunc("POST /api/consumers/{stream}/{group}/rdy", s.authMiddleware(s.handleConsumerRdyRoute))
 
 	// Admin endpoints
 	mux.HandleFunc("GET /admin/ping", s.authMiddleware(s.handleAdminPing))
@@ -510,51 +509,6 @@ func (s *Server) handleConsumerStatusRoute(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-// handleConsumerRdyRoute is the Go 1.22+ route handler for RDY control
-// This is an alias that changes the limit for consumers in a stream/group
-func (s *Server) handleConsumerRdyRoute(w http.ResponseWriter, r *http.Request) {
-	stream := r.PathValue("stream")
-	group := r.PathValue("group")
-
-	if stream == "" || group == "" {
-		http.Error(w, "Stream and group required", http.StatusBadRequest)
-		return
-	}
-
-	var req RdyRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	prefix := fmt.Sprintf("%s:%s:", stream, group)
-
-	s.consumersMutex.RLock()
-	var matchingConsumers []*consumerState
-	for key, consumer := range s.consumers {
-		if strings.HasPrefix(key, prefix) {
-			matchingConsumers = append(matchingConsumers, consumer)
-		}
-	}
-	s.consumersMutex.RUnlock()
-
-	if len(matchingConsumers) == 0 {
-		http.Error(w, "No consumers found for this stream/group", http.StatusNotFound)
-		return
-	}
-
-	for _, consumer := range matchingConsumers {
-		atomic.StoreInt32(&consumer.limit, int32(req.Count))
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":    "ok",
-		"consumers": len(matchingConsumers),
-	})
-}
-
 // Admin route handlers
 
 // handleAdminPing handles GET /admin/ping
@@ -721,11 +675,6 @@ type MultiMessage struct {
 	Messages []json.RawMessage `json:"messages"`
 }
 
-// RdyRequest structure for controlling consumer RDY state
-type RdyRequest struct {
-	Count int `json:"count"`
-}
-
 // handleAdd handles single message publishing (XADD) - kept for tests
 func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request, stream string) {
 	if r.Method != http.MethodPost {
@@ -797,47 +746,6 @@ func (s *Server) handleBatchAdd(w http.ResponseWriter, r *http.Request, stream s
 	})
 }
 
-// handleConsumerRdy handles RDY/limit control for all consumers of a stream/group - kept for tests
-func (s *Server) handleConsumerRdy(w http.ResponseWriter, r *http.Request, stream, group string) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var req RdyRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	prefix := fmt.Sprintf("%s:%s:", stream, group)
-
-	s.consumersMutex.RLock()
-	var matchingConsumers []*consumerState
-	for key, consumer := range s.consumers {
-		if strings.HasPrefix(key, prefix) {
-			matchingConsumers = append(matchingConsumers, consumer)
-		}
-	}
-	s.consumersMutex.RUnlock()
-
-	if len(matchingConsumers) == 0 {
-		http.Error(w, "No consumers found for this stream/group", http.StatusNotFound)
-		return
-	}
-
-	for _, consumer := range matchingConsumers {
-		atomic.StoreInt32(&consumer.limit, int32(req.Count))
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":    "ok",
-		"consumers": len(matchingConsumers),
-	})
-}
-
 // handleConsumerEvents handles SSE endpoint for consuming messages
 // GET /api/events?stream=<stream>&group=<group>&consumer=<name>&limit=<N>
 // Each HTTP client gets its own Redis consumer for load balancing
@@ -855,8 +763,7 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 	consumerNameParam := r.URL.Query().Get("consumer")
 
 	// Parse limit parameter (default to 1 for backward compatibility)
-	// Parse limit parameter (default to 1 for backward compatibility)
-	// A limit of 0 is valid and pauses message delivery (can be changed later via /rdy)
+	// A limit of 0 is valid and pauses message delivery (limit is set at connection time only)
 	limitStr := r.URL.Query().Get("limit")
 	limit := int32(1) // Default limit
 	if limitStr != "" {
@@ -910,7 +817,7 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 		inFlight:     0,
 	}
 
-	// Store consumer for limit control (check for duplicate consumer)
+	// Store consumer state (check for duplicate consumer)
 	s.consumersMutex.Lock()
 	if _, exists := s.consumers[consumerKey]; exists {
 		s.consumersMutex.Unlock()
