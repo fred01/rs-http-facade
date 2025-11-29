@@ -9,8 +9,7 @@ info:
     - REST API for Redis Streams operations
     - Producer endpoints (XADD) - publish single or multiple messages
     - Per-client consumers - each HTTP client gets its own Redis consumer for native load balancing
-    - Consumer SSE endpoint - consume messages in real-time via Server-Sent Events
-    - Consumer control - limit-based flow control for consumers
+    - Consumer SSE endpoint - consume messages in real-time via Server-Sent Events with configurable in-flight message limit
     - Message lifecycle management - finish messages with automatic expiry
     - Admin endpoints - ping, info, and stream listing
     - Secure authentication - constant-time bearer token validation to prevent timing attacks
@@ -262,66 +261,6 @@ paths:
                 consumers: 3
                 messages: 100
                 finished: 95
-        '401':
-          $ref: '#/components/responses/UnauthorizedError'
-        '404':
-          description: No consumers found for this stream/group
-          content:
-            text/plain:
-              schema:
-                type: string
-
-  /api/consumers/{stream}/{group}/limit:
-    post:
-      tags:
-        - Consumer
-      summary: Set consumer limit
-      description: |
-        Sets the in-flight message limit for all consumers of the specified stream/group.
-        This controls the maximum number of messages that can be "in-flight" (delivered but not yet finished) per consumer.
-        
-        When the limit is reached, the consumer will stop reading new messages from Redis until some messages are finished.
-        Setting the limit to 0 pauses message delivery.
-      operationId: setConsumerLimit
-      parameters:
-        - name: stream
-          in: path
-          required: true
-          description: Redis Stream name
-          schema:
-            type: string
-            example: test-stream
-        - name: group
-          in: path
-          required: true
-          description: Consumer group name
-          schema:
-            type: string
-            example: test-group
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/LimitRequest'
-            example:
-              count: 5
-      responses:
-        '200':
-          description: Limit set successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/LimitResponse'
-              example:
-                status: ok
-                consumers: 2
-        '400':
-          description: Invalid JSON or bad request
-          content:
-            text/plain:
-              schema:
-                type: string
         '401':
           $ref: '#/components/responses/UnauthorizedError'
         '404':
@@ -731,28 +670,6 @@ components:
           type: integer
           description: Total messages finished
           example: 95
-
-    LimitRequest:
-      type: object
-      required:
-        - count
-      properties:
-        count:
-          type: integer
-          description: Maximum number of messages in-flight for this consumer
-          minimum: 0
-          example: 5
-
-    LimitResponse:
-      type: object
-      properties:
-        status:
-          type: string
-          example: ok
-        consumers:
-          type: integer
-          description: Number of consumers affected
-          example: 2
 
     MessageActionResponse:
       type: object

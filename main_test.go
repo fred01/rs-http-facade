@@ -100,8 +100,8 @@ func TestSplitPath(t *testing.T) {
 			expected: []string{"stream", "group"},
 		},
 		{
-			path:     "stream/group/limit",
-			expected: []string{"stream", "group", "limit"},
+			path:     "stream/group/status",
+			expected: []string{"stream", "group", "status"},
 		},
 		{
 			path:     "messages/12345/finish",
@@ -155,18 +155,6 @@ func TestMessageStructures(t *testing.T) {
 		}
 		if len(msg.Messages) != 3 {
 			t.Errorf("expected 3 messages, got %d", len(msg.Messages))
-		}
-	})
-
-	t.Run("LimitRequest JSON", func(t *testing.T) {
-		jsonData := `{"count": 10}`
-		var req LimitRequest
-		err := json.Unmarshal([]byte(jsonData), &req)
-		if err != nil {
-			t.Fatalf("failed to unmarshal: %v", err)
-		}
-		if req.Count != 10 {
-			t.Errorf("expected count 10, got %d", req.Count)
 		}
 	})
 }
@@ -254,51 +242,6 @@ func TestHandleBatchAddValidation(t *testing.T) {
 
 			rr := httptest.NewRecorder()
 			server.handleBatchAdd(rr, req, tt.stream)
-
-			if rr.Code != tt.expectedStatus {
-				t.Errorf("expected status %d, got %d", tt.expectedStatus, rr.Code)
-			}
-		})
-	}
-}
-
-func TestHandleConsumerLimitValidation(t *testing.T) {
-	server := createTestServer()
-
-	tests := []struct {
-		name           string
-		method         string
-		body           string
-		expectedStatus int
-	}{
-		{
-			name:           "Invalid method",
-			method:         "GET",
-			body:           `{"count": 5}`,
-			expectedStatus: http.StatusMethodNotAllowed,
-		},
-		{
-			name:           "Invalid JSON",
-			method:         "POST",
-			body:           `invalid json`,
-			expectedStatus: http.StatusBadRequest,
-		},
-		{
-			name:           "Consumer not found",
-			method:         "POST",
-			body:           `{"count": 5}`,
-			expectedStatus: http.StatusNotFound,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(tt.method, "/api/consumers/test/group/limit", bytes.NewBufferString(tt.body))
-			req.Header.Set("Authorization", "Bearer "+testToken)
-			req.Header.Set("Content-Type", "application/json")
-
-			rr := httptest.NewRecorder()
-			server.handleConsumerLimit(rr, req, "test", "group")
 
 			if rr.Code != tt.expectedStatus {
 				t.Errorf("expected status %d, got %d", tt.expectedStatus, rr.Code)
