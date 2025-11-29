@@ -855,7 +855,6 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 	consumerNameParam := r.URL.Query().Get("consumer")
 
 	// Parse limit parameter (default to 1 for backward compatibility)
-	// Parse limit parameter (default to 1 for backward compatibility)
 	// A limit of 0 is valid and pauses message delivery (can be changed later via /limit endpoint)
 	limitStr := r.URL.Query().Get("limit")
 	limit := int32(1) // Default limit
