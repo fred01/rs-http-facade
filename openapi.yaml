@@ -10,7 +10,7 @@ info:
     - Producer endpoints (XADD) - publish single or multiple messages
     - Per-client consumers - each HTTP client gets its own Redis consumer for native load balancing
     - Consumer SSE endpoint - consume messages in real-time via Server-Sent Events
-    - Consumer control - RDY flow control for consumers
+    - Consumer control - limit-based flow control for consumers
     - Message lifecycle management - finish messages with automatic expiry
     - Admin endpoints - ping, info, and stream listing
     - Secure authentication - constant-time bearer token validation to prevent timing attacks
@@ -271,7 +271,7 @@ paths:
               schema:
                 type: string
 
-  /api/consumers/{stream}/{group}/rdy:
+  /api/consumers/{stream}/{group}/limit:
     post:
       tags:
         - Consumer
@@ -282,7 +282,7 @@ paths:
         
         When the limit is reached, the consumer will stop reading new messages from Redis until some messages are finished.
         Setting the limit to 0 pauses message delivery.
-      operationId: setConsumerRdy
+      operationId: setConsumerLimit
       parameters:
         - name: stream
           in: path
@@ -303,7 +303,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RdyRequest'
+              $ref: '#/components/schemas/LimitRequest'
             example:
               count: 5
       responses:
@@ -312,7 +312,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/RdyResponse'
+                $ref: '#/components/schemas/LimitResponse'
               example:
                 status: ok
                 consumers: 2
@@ -732,18 +732,18 @@ components:
           description: Total messages finished
           example: 95
 
-    RdyRequest:
+    LimitRequest:
       type: object
       required:
         - count
       properties:
         count:
           type: integer
-          description: RDY count (number of messages to receive at once)
+          description: Maximum number of messages in-flight for this consumer
           minimum: 0
           example: 5
 
-    RdyResponse:
+    LimitResponse:
       type: object
       properties:
         status:

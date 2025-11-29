@@ -426,8 +426,8 @@ func TestMessageFinish(t *testing.T) {
 	}
 }
 
-// TestRDYControl tests RDY flow control with actual message delivery
-func TestRDYControl(t *testing.T) {
+// TestLimitControl tests limit flow control with actual message delivery
+func TestLimitControl(t *testing.T) {
 	ctx := context.Background()
 
 	redisContainer, redisAddress, err := startRedis(ctx, t)
@@ -440,8 +440,8 @@ func TestRDYControl(t *testing.T) {
 	defer stopFacade()
 
 	facadeURL := fmt.Sprintf("http://localhost:%d", facadePort)
-	stream := "rdy-test"
-	group := "rdy-group"
+	stream := "limit-test"
+	group := "limit-group"
 
 	// Track messages received
 	receivedMessages := make([]string, 0)
@@ -495,24 +495,24 @@ func TestRDYControl(t *testing.T) {
 	// Wait for consumer to connect
 	time.Sleep(2 * time.Second)
 
-	// Set RDY to 0 to pause message delivery
-	rdyURL := fmt.Sprintf("%s/api/consumers/%s/%s/rdy", facadeURL, stream, group)
-	rdyPayload := `{"count": 0}`
-	rdyReq, _ := http.NewRequest("POST", rdyURL, bytes.NewBufferString(rdyPayload))
-	rdyReq.Header.Set("Authorization", "Bearer test-token")
-	rdyReq.Header.Set("Content-Type", "application/json")
+	// Set limit to 0 to pause message delivery
+	limitURL := fmt.Sprintf("%s/api/consumers/%s/%s/limit", facadeURL, stream, group)
+	limitPayload := `{"count": 0}`
+	limitReq, _ := http.NewRequest("POST", limitURL, bytes.NewBufferString(limitPayload))
+	limitReq.Header.Set("Authorization", "Bearer test-token")
+	limitReq.Header.Set("Content-Type", "application/json")
 
-	rdyResp, err := http.DefaultClient.Do(rdyReq)
+	limitResp, err := http.DefaultClient.Do(limitReq)
 	if err != nil {
-		t.Fatalf("Failed to set RDY: %v", err)
+		t.Fatalf("Failed to set limit: %v", err)
 	}
-	rdyResp.Body.Close()
+	limitResp.Body.Close()
 
-	if rdyResp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", rdyResp.StatusCode)
+	if limitResp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", limitResp.StatusCode)
 	}
 
-	t.Logf("Set RDY count to 0 (paused)")
+	t.Logf("Set limit to 0 (paused)")
 
 	// Now publish 15 messages while paused
 	for i := 0; i < 15; i++ {
@@ -534,35 +534,35 @@ func TestRDYControl(t *testing.T) {
 	if pausedCount > 0 {
 		t.Logf("Note: Received %d messages while paused (may be due to timing)", pausedCount)
 	} else {
-		t.Logf("✓ No messages received while RDY=0")
+		t.Logf("✓ No messages received while limit=0")
 	}
 
-	// Set RDY to 5 to start receiving
-	rdyPayload = `{"count": 5}`
-	rdyReq, _ = http.NewRequest("POST", rdyURL, bytes.NewBufferString(rdyPayload))
-	rdyReq.Header.Set("Authorization", "Bearer test-token")
-	rdyReq.Header.Set("Content-Type", "application/json")
+	// Set limit to 5 to start receiving
+	limitPayload = `{"count": 5}`
+	limitReq, _ = http.NewRequest("POST", limitURL, bytes.NewBufferString(limitPayload))
+	limitReq.Header.Set("Authorization", "Bearer test-token")
+	limitReq.Header.Set("Content-Type", "application/json")
 
-	rdyResp, err = http.DefaultClient.Do(rdyReq)
+	limitResp, err = http.DefaultClient.Do(limitReq)
 	if err != nil {
-		t.Fatalf("Failed to set RDY: %v", err)
+		t.Fatalf("Failed to set limit: %v", err)
 	}
-	rdyResp.Body.Close()
+	limitResp.Body.Close()
 
-	t.Logf("Set RDY count to 5")
+	t.Logf("Set limit to 5")
 
 	// Wait for some messages to be delivered
 	time.Sleep(3 * time.Second)
 
-	// Check that we received some messages after enabling RDY
+	// Check that we received some messages after enabling limit
 	receivedMutex.Lock()
-	afterRdyCount := len(receivedMessages)
+	afterLimitCount := len(receivedMessages)
 	receivedMutex.Unlock()
 
-	if afterRdyCount > pausedCount {
-		t.Logf("✓ Messages started flowing after RDY=5: received %d messages", afterRdyCount)
+	if afterLimitCount > pausedCount {
+		t.Logf("✓ Messages started flowing after limit=5: received %d messages", afterLimitCount)
 	} else {
-		t.Errorf("Expected to receive messages after setting RDY=5, got %d total", afterRdyCount)
+		t.Errorf("Expected to receive messages after setting limit=5, got %d total", afterLimitCount)
 	}
 
 	// Get consumer status

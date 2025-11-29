@@ -102,7 +102,7 @@ func (s *Server) Start() error {
 	// Consumer endpoints
 	mux.HandleFunc("GET /api/events", s.authMiddleware(s.handleConsumerEvents))
 	mux.HandleFunc("GET /api/consumers/{stream}/{group}", s.authMiddleware(s.handleConsumerStatusRoute))
-	mux.HandleFunc("POST /api/consumers/{stream}/{group}/rdy", s.authMiddleware(s.handleConsumerRdyRoute))
+	mux.HandleFunc("POST /api/consumers/{stream}/{group}/limit", s.authMiddleware(s.handleConsumerLimitRoute))
 
 	// Admin endpoints
 	mux.HandleFunc("GET /admin/ping", s.authMiddleware(s.handleAdminPing))
@@ -510,9 +510,9 @@ func (s *Server) handleConsumerStatusRoute(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-// handleConsumerRdyRoute is the Go 1.22+ route handler for RDY control
-// This is an alias that changes the limit for consumers in a stream/group
-func (s *Server) handleConsumerRdyRoute(w http.ResponseWriter, r *http.Request) {
+// handleConsumerLimitRoute is the Go 1.22+ route handler for limit control
+// This changes the limit for consumers in a stream/group
+func (s *Server) handleConsumerLimitRoute(w http.ResponseWriter, r *http.Request) {
 	stream := r.PathValue("stream")
 	group := r.PathValue("group")
 
@@ -521,7 +521,7 @@ func (s *Server) handleConsumerRdyRoute(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	var req RdyRequest
+	var req LimitRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
 		return
@@ -721,8 +721,8 @@ type MultiMessage struct {
 	Messages []json.RawMessage `json:"messages"`
 }
 
-// RdyRequest structure for controlling consumer RDY state
-type RdyRequest struct {
+// LimitRequest structure for controlling consumer limit
+type LimitRequest struct {
 	Count int `json:"count"`
 }
 
@@ -797,14 +797,14 @@ func (s *Server) handleBatchAdd(w http.ResponseWriter, r *http.Request, stream s
 	})
 }
 
-// handleConsumerRdy handles RDY/limit control for all consumers of a stream/group - kept for tests
-func (s *Server) handleConsumerRdy(w http.ResponseWriter, r *http.Request, stream, group string) {
+// handleConsumerLimit handles limit control for all consumers of a stream/group - kept for tests
+func (s *Server) handleConsumerLimit(w http.ResponseWriter, r *http.Request, stream, group string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	var req RdyRequest
+	var req LimitRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
 		return
@@ -856,7 +856,7 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 
 	// Parse limit parameter (default to 1 for backward compatibility)
 	// Parse limit parameter (default to 1 for backward compatibility)
-	// A limit of 0 is valid and pauses message delivery (can be changed later via /rdy)
+	// A limit of 0 is valid and pauses message delivery (can be changed later via /limit endpoint)
 	limitStr := r.URL.Query().Get("limit")
 	limit := int32(1) // Default limit
 	if limitStr != "" {

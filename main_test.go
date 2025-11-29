@@ -100,8 +100,8 @@ func TestSplitPath(t *testing.T) {
 			expected: []string{"stream", "group"},
 		},
 		{
-			path:     "stream/group/rdy",
-			expected: []string{"stream", "group", "rdy"},
+			path:     "stream/group/limit",
+			expected: []string{"stream", "group", "limit"},
 		},
 		{
 			path:     "messages/12345/finish",
@@ -158,9 +158,9 @@ func TestMessageStructures(t *testing.T) {
 		}
 	})
 
-	t.Run("RdyRequest JSON", func(t *testing.T) {
+	t.Run("LimitRequest JSON", func(t *testing.T) {
 		jsonData := `{"count": 10}`
-		var req RdyRequest
+		var req LimitRequest
 		err := json.Unmarshal([]byte(jsonData), &req)
 		if err != nil {
 			t.Fatalf("failed to unmarshal: %v", err)
@@ -262,7 +262,7 @@ func TestHandleBatchAddValidation(t *testing.T) {
 	}
 }
 
-func TestHandleConsumerRdyValidation(t *testing.T) {
+func TestHandleConsumerLimitValidation(t *testing.T) {
 	server := createTestServer()
 
 	tests := []struct {
@@ -293,12 +293,12 @@ func TestHandleConsumerRdyValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(tt.method, "/api/consumers/test/group/rdy", bytes.NewBufferString(tt.body))
+			req := httptest.NewRequest(tt.method, "/api/consumers/test/group/limit", bytes.NewBufferString(tt.body))
 			req.Header.Set("Authorization", "Bearer "+testToken)
 			req.Header.Set("Content-Type", "application/json")
 
 			rr := httptest.NewRecorder()
-			server.handleConsumerRdy(rr, req, "test", "group")
+			server.handleConsumerLimit(rr, req, "test", "group")
 
 			if rr.Code != tt.expectedStatus {
 				t.Errorf("expected status %d, got %d", tt.expectedStatus, rr.Code)

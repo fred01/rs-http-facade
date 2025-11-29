@@ -9,7 +9,7 @@ A simple HTTP REST facade for Redis Streams written in Go. This service provides
 - **Per-client consumers** - each HTTP client gets its own Redis consumer for native load balancing
 - **Consumer SSE endpoint** - consume messages in real-time via Server-Sent Events
 - **SSE keepalive** - configurable keepalive comments to maintain long-lived connections
-- **Consumer control** - RDY flow control for consumers
+- **Consumer control** - limit-based flow control for consumers
 - **Message lifecycle management** - finish messages with automatic expiry
 - **Automatic message recovery** - expired messages are automatically claimed by other consumers using `XAUTOCLAIM`
 - **Admin endpoints** - ping, info, stream listing, and statistics
@@ -255,10 +255,10 @@ This endpoint returns a stream of Server-Sent Events. Each event contains:
 - This enables horizontal scaling: add more HTTP clients to process messages in parallel.
 - **Keepalive**: The server sends SSE comment lines (`: keepalive`) at a configurable interval (default: 60 seconds) to keep the connection alive.
 
-#### Set Consumer RDY Count
+#### Set Consumer Limit
 
 ```http
-POST /api/consumers/{stream}/{group}/rdy
+POST /api/consumers/{stream}/{group}/limit
 Content-Type: application/json
 Authorization: Bearer your-secret-token
 
@@ -518,10 +518,10 @@ The integration tests verify:
 - Messages can be acknowledged using XACK
 - Finished messages are removed from the pending entries list
 
-**RDY Flow Control (TestRDYControl)**:
-- RDY count can be set via API
-- Verifies messages are delivered according to RDY count (e.g., RDY=5 delivers ~5 messages)
-- After finishing messages, more messages are delivered up to RDY limit
+**Limit Flow Control (TestLimitControl)**:
+- Limit can be set via API
+- Verifies messages are delivered according to limit (e.g., limit=5 delivers ~5 messages)
+- After finishing messages, more messages are delivered up to limit
 - Consumer status endpoint returns correct information
 - Flow control applies to all consumers for a stream/group
 
