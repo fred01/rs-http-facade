@@ -454,17 +454,11 @@ func (s *Server) handleFinishNewRoute(w http.ResponseWriter, r *http.Request) {
 	if consumerState, ok := s.consumers[consumerKey]; ok {
 		atomic.AddInt64(&consumerState.finished, 1)
 		// Decrement inFlight and ensure it doesn't go below 0
-		for {
-			current := atomic.LoadInt32(&consumerState.inFlight)
-			if current <= 0 {
-				// Already at 0, nothing to decrement
-				log.Printf("Warning: inFlight already at %d for consumer %s when finishing message", current, consumerKey)
-				break
-			}
-			if atomic.CompareAndSwapInt32(&consumerState.inFlight, current, current-1) {
-				break
-			}
-			// CAS failed, retry
+		if newVal := atomic.AddInt32(&consumerState.inFlight, -1); newVal < 0 {
+			// This case should ideally not happen with correct accounting,
+			// but as a safeguard, log it and reset to 0.
+			log.Printf("Warning: inFlight for consumer %s went negative (%d). Resetting to 0.", consumerKey, newVal)
+			atomic.StoreInt32(&consumerState.inFlight, 0)
 		}
 	}
 	s.consumersMutex.RUnlock()
@@ -916,8 +910,14 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 		inFlight:     0,
 	}
 
-	// Store consumer for limit control
+	// Store consumer for limit control (check for duplicate consumer)
 	s.consumersMutex.Lock()
+	if _, exists := s.consumers[consumerKey]; exists {
+		s.consumersMutex.Unlock()
+		log.Printf("Consumer %s is already connected", consumerKey)
+		http.Error(w, fmt.Sprintf("Consumer %s is already connected", consumerName), http.StatusConflict)
+		return
+	}
 	s.consumers[consumerKey] = state
 	s.consumersMutex.Unlock()
 
