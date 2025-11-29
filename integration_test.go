@@ -24,6 +24,7 @@ import (
 )
 
 var portCounter int32 = 18080
+var consumerCounter int32 = 0
 
 // TestLoadBalancingBehavior tests that messages are distributed across multiple HTTP consumers
 func TestLoadBalancingBehavior(t *testing.T) {
@@ -118,7 +119,9 @@ func TestLoadBalancingBehavior(t *testing.T) {
 
 // consumeMessagesWithStop consumes messages and tracks a shared total
 func consumeMessagesWithStop(t *testing.T, facadeURL, stream, group string, myCount, totalCount *int32, maxTotal int, allDone chan struct{}) int {
-	url := fmt.Sprintf("%s/api/events?stream=%s&group=%s", facadeURL, stream, group)
+	// Generate a unique consumer name for this goroutine
+	consumerName := fmt.Sprintf("test-consumer-%d", atomic.AddInt32(&consumerCounter, 1))
+	url := fmt.Sprintf("%s/api/events?stream=%s&group=%s&consumer=%s&limit=100", facadeURL, stream, group, consumerName)
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -159,8 +162,8 @@ func consumeMessagesWithStop(t *testing.T, facadeURL, stream, group string, myCo
 				continue
 			}
 
-			// Finish the message
-			finishURL := fmt.Sprintf("%s/api/messages/%s/finish", facadeURL, messageID)
+			// Finish the message using the new endpoint
+			finishURL := fmt.Sprintf("%s/api/streams/%s/groups/%s/consumers/%s/messages/%s/finish", facadeURL, stream, group, consumerName, messageID)
 			finishReq, _ := http.NewRequest("POST", finishURL, nil)
 			finishReq.Header.Set("Authorization", "Bearer test-token")
 
@@ -355,6 +358,7 @@ func TestMessageFinish(t *testing.T) {
 	facadeURL := fmt.Sprintf("http://localhost:%d", facadePort)
 	stream := "finish-test"
 	group := "finish-group"
+	consumerName := "finish-consumer"
 
 	// Publish a message
 	err = publishSingleMessage(facadeURL, stream, "test-message")
@@ -365,7 +369,7 @@ func TestMessageFinish(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	// Consumer that finishes the message
-	url := fmt.Sprintf("%s/api/events?stream=%s&group=%s", facadeURL, stream, group)
+	url := fmt.Sprintf("%s/api/events?stream=%s&group=%s&consumer=%s&limit=10", facadeURL, stream, group, consumerName)
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("Authorization", "Bearer test-token")
 
@@ -391,8 +395,8 @@ func TestMessageFinish(t *testing.T) {
 
 				msgID := msg["id"].(string)
 
-				// Finish the message
-				finishURL := fmt.Sprintf("%s/api/messages/%s/finish", facadeURL, msgID)
+				// Finish the message using the new endpoint
+				finishURL := fmt.Sprintf("%s/api/streams/%s/groups/%s/consumers/%s/messages/%s/finish", facadeURL, stream, group, consumerName, msgID)
 				finishReq, _ := http.NewRequest("POST", finishURL, nil)
 				finishReq.Header.Set("Authorization", "Bearer test-token")
 				finishResp, err := http.DefaultClient.Do(finishReq)
@@ -601,6 +605,7 @@ func TestSSEConnectionClose(t *testing.T) {
 	facadeURL := fmt.Sprintf("http://localhost:%d", facadePort)
 	stream := "close-test"
 	group := "close-group"
+	consumerName := "close-consumer"
 
 	// Publish some messages
 	for i := 0; i < 10; i++ {
@@ -612,7 +617,7 @@ func TestSSEConnectionClose(t *testing.T) {
 	// Start consumer and close it after receiving a few messages
 	receivedCount := int32(0)
 
-	url := fmt.Sprintf("%s/api/events?stream=%s&group=%s", facadeURL, stream, group)
+	url := fmt.Sprintf("%s/api/events?stream=%s&group=%s&consumer=%s&limit=10", facadeURL, stream, group, consumerName)
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("Authorization", "Bearer test-token")
 
@@ -636,8 +641,8 @@ func TestSSEConnectionClose(t *testing.T) {
 				msgID := msg["id"].(string)
 				atomic.AddInt32(&receivedCount, 1)
 
-				// Finish the message
-				finishURL := fmt.Sprintf("%s/api/messages/%s/finish", facadeURL, msgID)
+				// Finish the message using the new endpoint
+				finishURL := fmt.Sprintf("%s/api/streams/%s/groups/%s/consumers/%s/messages/%s/finish", facadeURL, stream, group, consumerName, msgID)
 				finishReq, _ := http.NewRequest("POST", finishURL, nil)
 				finishReq.Header.Set("Authorization", "Bearer test-token")
 				finishResp, _ := http.DefaultClient.Do(finishReq)
@@ -887,10 +892,10 @@ func publishSingleMessage(facadeURL, stream, data string) error {
 	return nil
 }
 
-// TestServiceRestartSurvival tests that the service survives a restart
-// and can still finish messages that were delivered before the restart.
-// This test validates the stateless design where all message tracking
-// is stored in Redis rather than in-memory.
+// TestServiceRestartSurvival tests that unacknowledged messages survive server restart
+// and can be reclaimed by other consumers via XAUTOCLAIM.
+// This test validates the Redis Streams-based approach where message tracking
+// is done purely through the Pending Entries List (PEL).
 func TestServiceRestartSurvival(t *testing.T) {
 	ctx := context.Background()
 
@@ -907,6 +912,7 @@ func TestServiceRestartSurvival(t *testing.T) {
 
 	stream := "restart-test-stream"
 	group := "restart-test-group"
+	consumerName := "restart-test-consumer"
 
 	// Publish a message
 	err = publishSingleMessage(facadeURL, stream, "test-message-for-restart")
@@ -917,7 +923,7 @@ func TestServiceRestartSurvival(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Start a consumer and receive the message (but don't finish it yet)
-	url := fmt.Sprintf("%s/api/events?stream=%s&group=%s", facadeURL, stream, group)
+	url := fmt.Sprintf("%s/api/events?stream=%s&group=%s&consumer=%s&limit=10", facadeURL, stream, group, consumerName)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		t.Fatalf("Failed to create request: %v", err)
@@ -965,48 +971,36 @@ func TestServiceRestartSurvival(t *testing.T) {
 	resp.Body.Close()
 	time.Sleep(500 * time.Millisecond)
 
-	// Create a direct Redis client to verify message status
+	// Create a direct Redis client to verify message status in PEL
 	redisClient := redis.NewClient(&redis.Options{
 		Addr: redisAddress,
 	})
 	defer redisClient.Close()
 
-	// VERIFY: Message info should exist in Redis after delivery (before restart)
-	redisKey := activeMessageKeyPrefix + messageID
-	msgInfoData, err := redisClient.Get(ctx, redisKey).Result()
-	if err == redis.Nil {
-		t.Fatalf("Message info NOT found in Redis after delivery - key: %s", redisKey)
-	} else if err != nil {
-		t.Fatalf("Failed to get message info from Redis: %v", err)
+	// VERIFY: Message should be in the Pending Entries List (PEL)
+	pending, err := redisClient.XPending(ctx, stream, group).Result()
+	if err != nil {
+		t.Fatalf("Failed to get pending info: %v", err)
 	}
-	t.Logf("✓ Message info exists in Redis: %s", msgInfoData)
-
-	// Verify the message info contains expected fields
-	var msgInfo activeMessageInfo
-	if err := json.Unmarshal([]byte(msgInfoData), &msgInfo); err != nil {
-		t.Fatalf("Failed to parse message info from Redis: %v", err)
+	if pending.Count == 0 {
+		t.Fatalf("Expected pending messages in PEL, got 0")
 	}
-	if msgInfo.Stream != stream {
-		t.Errorf("Expected stream %s, got %s", stream, msgInfo.Stream)
-	}
-	if msgInfo.Group != group {
-		t.Errorf("Expected group %s, got %s", group, msgInfo.Group)
-	}
-	t.Log("✓ Message info in Redis has correct stream and group")
+	t.Logf("✓ Message is in PEL: %d pending messages", pending.Count)
 
 	// STOP the first server instance (simulate restart)
 	t.Log("Stopping first server instance...")
 	stopFacade1()
 	time.Sleep(1 * time.Second)
 
-	// VERIFY: Message info should STILL exist in Redis after server restart
-	msgInfoData, err = redisClient.Get(ctx, redisKey).Result()
-	if err == redis.Nil {
-		t.Fatalf("Message info was lost from Redis after server restart!")
-	} else if err != nil {
-		t.Fatalf("Failed to get message info from Redis after restart: %v", err)
+	// VERIFY: Message should STILL be in PEL after server restart
+	pending, err = redisClient.XPending(ctx, stream, group).Result()
+	if err != nil {
+		t.Fatalf("Failed to get pending info after restart: %v", err)
 	}
-	t.Log("✓ Message info persists in Redis after server restart")
+	if pending.Count == 0 {
+		t.Fatalf("Message was lost from PEL after server restart!")
+	}
+	t.Log("✓ Message persists in PEL after server restart")
 
 	// START a new server instance on a different port (simulate restart)
 	t.Log("Starting new server instance (simulating restart)...")
@@ -1015,9 +1009,8 @@ func TestServiceRestartSurvival(t *testing.T) {
 
 	facadeURL2 := fmt.Sprintf("http://localhost:%d", facadePort2)
 
-	// Try to finish the message using the NEW server instance
-	// This should work because the message info is stored in Redis, not in-memory
-	finishURL := fmt.Sprintf("%s/api/messages/%s/finish", facadeURL2, messageID)
+	// Finish the message using the NEW server instance
+	finishURL := fmt.Sprintf("%s/api/streams/%s/groups/%s/consumers/%s/messages/%s/finish", facadeURL2, stream, group, consumerName, messageID)
 	finishReq, err := http.NewRequest("POST", finishURL, nil)
 	if err != nil {
 		t.Fatalf("Failed to create finish request: %v", err)
@@ -1041,17 +1034,18 @@ func TestServiceRestartSurvival(t *testing.T) {
 		t.Log("✓ Successfully finished message after service restart!")
 	}
 
-	// VERIFY: Message info should be DELETED from Redis after finish
-	_, err = redisClient.Get(ctx, redisKey).Result()
-	if err == redis.Nil {
-		t.Log("✓ Message info correctly deleted from Redis after finish")
-	} else if err != nil {
-		t.Fatalf("Failed to check message info deletion from Redis: %v", err)
+	// VERIFY: Message should be removed from PEL after finish (XACK)
+	pending, err = redisClient.XPending(ctx, stream, group).Result()
+	if err != nil {
+		t.Fatalf("Failed to check PEL after finish: %v", err)
+	}
+	if pending.Count == 0 {
+		t.Log("✓ Message correctly removed from PEL after finish (XACK)")
 	} else {
-		t.Errorf("Message info should have been deleted from Redis after finish, but it still exists")
+		t.Errorf("Message should have been removed from PEL after finish, but %d messages still pending", pending.Count)
 	}
 
-	t.Log("✓ Service restart survival test PASSED - service is stateless!")
+	t.Log("✓ Service restart survival test PASSED - using Redis Streams PEL!")
 }
 
 // startFacadeServerOnPort starts the HTTP facade server on a specific port
