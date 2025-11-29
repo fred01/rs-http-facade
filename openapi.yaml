@@ -149,10 +149,12 @@ paths:
         Opens a Server-Sent Events stream to consume messages from the specified Redis Stream and consumer group.
         
         **Important Notes:**
-        - Messages received via SSE require explicit acknowledgement. You must explicitly finish or touch each message using the message lifecycle endpoints.
+        - Messages received via SSE require explicit acknowledgement. You must finish each message using the `/api/streams/{stream}/groups/{group}/consumers/{consumer}/messages/{messageId}/finish` endpoint.
         - **Native Redis Streams load balancing**: Each HTTP client creates its own consumer within the consumer group. When multiple clients connect to the same stream/group, Redis distributes messages across them, just like native Redis Streams clients.
         - This enables horizontal scaling: add more HTTP clients to process messages in parallel.
+        - **Flow control via limit**: The `limit` parameter controls how many messages can be "in-flight" (delivered but not yet finished) for this consumer. New messages won't be read from Redis until some in-flight messages are finished.
         - **Keepalive**: The server sends SSE comment lines (`: keepalive`) at a configurable interval (default: 60 seconds) to keep the connection alive. This can be configured via `sse_keepalive_interval_sec` setting or disabled by setting it to a negative value.
+        - **Re-delivery**: Messages that are not acknowledged within 5 minutes can be reclaimed by other consumers via XAUTOCLAIM.
       operationId: consumeMessages
       parameters:
         - name: stream
@@ -169,6 +171,22 @@ paths:
           schema:
             type: string
             example: test-group
+        - name: consumer
+          in: query
+          required: false
+          description: Consumer name (optional, will be auto-generated if not provided)
+          schema:
+            type: string
+            example: my-consumer
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of messages in-flight for this consumer (default is 1)
+          schema:
+            type: integer
+            minimum: 0
+            default: 1
+            example: 10
       responses:
         '200':
           description: |
@@ -257,8 +275,13 @@ paths:
     post:
       tags:
         - Consumer
-      summary: Set consumer RDY count
-      description: Sets the RDY (ready) count for all consumers of the specified stream/group. This controls the flow of messages to consumers.
+      summary: Set consumer limit
+      description: |
+        Sets the in-flight message limit for all consumers of the specified stream/group.
+        This controls the maximum number of messages that can be "in-flight" (delivered but not yet finished) per consumer.
+        
+        When the limit is reached, the consumer will stop reading new messages from Redis until some messages are finished.
+        Setting the limit to 0 pauses message delivery.
       operationId: setConsumerRdy
       parameters:
         - name: stream
@@ -285,7 +308,7 @@ paths:
               count: 5
       responses:
         '200':
-          description: RDY count set successfully
+          description: Limit set successfully
           content:
             application/json:
               schema:
@@ -308,14 +331,37 @@ paths:
               schema:
                 type: string
 
-  /api/messages/{messageId}/finish:
+  /api/streams/{stream}/groups/{group}/consumers/{consumer}/messages/{messageId}/finish:
     post:
       tags:
         - Message Lifecycle
       summary: Finish message (XACK)
-      description: Marks the message as successfully processed using XACK and removes it from the pending entries list
-      operationId: finishMessage
+      description: |
+        Marks the message as successfully processed using XACK and removes it from the pending entries list.
+        This decreases the consumer's in-flight count, allowing it to receive more messages.
+      operationId: finishMessageNew
       parameters:
+        - name: stream
+          in: path
+          required: true
+          description: Redis Stream name
+          schema:
+            type: string
+            example: test-stream
+        - name: group
+          in: path
+          required: true
+          description: Consumer group name
+          schema:
+            type: string
+            example: test-group
+        - name: consumer
+          in: path
+          required: true
+          description: Consumer name
+          schema:
+            type: string
+            example: my-consumer
         - name: messageId
           in: path
           required: true
@@ -333,16 +379,22 @@ paths:
               example:
                 status: ok
                 action: finished
-        '401':
-          $ref: '#/components/responses/UnauthorizedError'
-        '404':
-          description: Message not found or already processed
+        '400':
+          description: Missing required path parameters
           content:
             text/plain:
               schema:
                 type: string
-        '405':
-          description: Method not allowed
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          description: Message not found in pending list or already acknowledged
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: Failed to acknowledge message
           content:
             text/plain:
               schema:

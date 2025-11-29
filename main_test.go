@@ -307,29 +307,46 @@ func TestHandleConsumerRdyValidation(t *testing.T) {
 	}
 }
 
-func TestHandleFinishRouteValidation(t *testing.T) {
+func TestHandleFinishNewRouteValidation(t *testing.T) {
 	server := createTestServer()
 
 	tests := []struct {
 		name           string
+		stream         string
+		group          string
+		consumer       string
 		messageId      string
 		expectedStatus int
 	}{
 		{
-			name:           "Message not found",
+			name:           "Message not found in pending list",
+			stream:         "test-stream",
+			group:          "test-group",
+			consumer:       "consumer-1",
 			messageId:      "nonexistent-0",
 			expectedStatus: http.StatusNotFound,
+		},
+		{
+			name:           "Missing stream param",
+			stream:         "",
+			group:          "test-group",
+			consumer:       "consumer-1",
+			messageId:      "nonexistent-0",
+			expectedStatus: http.StatusBadRequest,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest("POST", "/api/messages/"+tt.messageId+"/finish", nil)
+			req := httptest.NewRequest("POST", "/api/streams/"+tt.stream+"/groups/"+tt.group+"/consumers/"+tt.consumer+"/messages/"+tt.messageId+"/finish", nil)
 			req.Header.Set("Authorization", "Bearer "+testToken)
+			req.SetPathValue("stream", tt.stream)
+			req.SetPathValue("group", tt.group)
+			req.SetPathValue("consumer", tt.consumer)
 			req.SetPathValue("messageId", tt.messageId)
 
 			rr := httptest.NewRecorder()
-			server.handleFinishRoute(rr, req)
+			server.handleFinishNewRoute(rr, req)
 
 			if rr.Code != tt.expectedStatus {
 				t.Errorf("expected status %d, got %d", tt.expectedStatus, rr.Code)

@@ -44,8 +44,7 @@ var (
 	messageExpiryDuration = 5 * time.Minute
 )
 
-// Redis key prefix for active messages (stateless storage)
-const activeMessageKeyPrefix = "rs-http-facade:active-msg:"
+
 
 // Server encapsulates all application state and dependencies
 type Server struct {
@@ -98,7 +97,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("POST /api/streams/{stream}/messages", s.authMiddleware(s.handleAddRoute))
 
 	// Message lifecycle endpoints
-	mux.HandleFunc("POST /api/messages/{messageId}/finish", s.authMiddleware(s.handleFinishRoute))
+	mux.HandleFunc("POST /api/streams/{stream}/groups/{group}/consumers/{consumer}/messages/{messageId}/finish", s.authMiddleware(s.handleFinishNewRoute))
 
 	// Consumer endpoints
 	mux.HandleFunc("GET /api/events", s.authMiddleware(s.handleConsumerEvents))
@@ -259,14 +258,6 @@ func validateConfig(cfg AppConfig) error {
 	return nil
 }
 
-// activeMessageInfo stores message metadata in Redis for stateless operation.
-// This allows the service to be restarted without losing track of pending messages.
-type activeMessageInfo struct {
-	Stream      string `json:"stream"`
-	Group       string `json:"group"`
-	ConsumerKey string `json:"consumer_key"`
-}
-
 // consumerState tracks the state of an SSE consumer
 type consumerState struct {
 	stream       string
@@ -274,7 +265,8 @@ type consumerState struct {
 	consumerName string
 	stopChan     chan struct{}
 	messageChan  chan redis.XMessage
-	ready        int32 // RDY count
+	limit        int32 // maximum messages in-flight for this consumer
+	inFlight     int32 // current messages in-flight
 	received     int64
 	finished     int64
 }
@@ -427,54 +419,47 @@ func (s *Server) handleBatchAddRoute(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleFinishRoute is the Go 1.22+ route handler for finishing messages
-func (s *Server) handleFinishRoute(w http.ResponseWriter, r *http.Request) {
+// handleFinishNewRoute is the new route handler for finishing messages with explicit params in URL
+// POST /api/streams/{stream}/groups/{group}/consumers/{consumer}/messages/{messageId}/finish
+func (s *Server) handleFinishNewRoute(w http.ResponseWriter, r *http.Request) {
+	stream := r.PathValue("stream")
+	group := r.PathValue("group")
+	consumer := r.PathValue("consumer")
 	messageID := r.PathValue("messageId")
-	if messageID == "" {
-		http.Error(w, "Message ID required", http.StatusBadRequest)
+
+	if stream == "" || group == "" || consumer == "" || messageID == "" {
+		http.Error(w, "Stream, group, consumer, and message ID required", http.StatusBadRequest)
 		return
 	}
 
 	ctx := r.Context()
 
-	// Get message info from Redis
-	key := activeMessageKeyPrefix + messageID
-	data, err := s.redisClient.Get(ctx, key).Result()
-	if err == redis.Nil {
-		http.Error(w, "Message not found or already processed", http.StatusNotFound)
-		return
-	}
-	if err != nil {
-		log.Printf("Failed to get message info from Redis: %v", err)
-		http.Error(w, "Failed to retrieve message information", http.StatusInternalServerError)
-		return
-	}
-
-	var msgInfo activeMessageInfo
-	if err := json.Unmarshal([]byte(data), &msgInfo); err != nil {
-		log.Printf("Failed to parse message info: %v", err)
-		http.Error(w, "Invalid message data format", http.StatusInternalServerError)
-		return
-	}
-
 	// Acknowledge the message in Redis Stream
-	_, err = s.redisClient.XAck(ctx, msgInfo.Stream, msgInfo.Group, messageID).Result()
+	acked, err := s.redisClient.XAck(ctx, stream, group, messageID).Result()
 	if err != nil {
-		log.Printf("Failed to acknowledge message: %v", err)
+		log.Printf("Failed to acknowledge message %s: %v", messageID, err)
 		http.Error(w, "Failed to acknowledge message", http.StatusInternalServerError)
 		return
 	}
 
-	// Delete the message info from Redis
-	if err := s.redisClient.Del(ctx, key).Err(); err != nil {
-		log.Printf("Failed to delete message info from Redis: %v", err)
-		// Continue anyway - message was already acknowledged
+	if acked == 0 {
+		log.Printf("Message %s not found in pending list for stream=%s group=%s", messageID, stream, group)
+		http.Error(w, "Message not found in pending list or already acknowledged", http.StatusNotFound)
+		return
 	}
 
 	// Update consumer stats (if consumer is still connected)
+	consumerKey := fmt.Sprintf("%s:%s:%s", stream, group, consumer)
 	s.consumersMutex.RLock()
-	if consumer, ok := s.consumers[msgInfo.ConsumerKey]; ok {
-		atomic.AddInt64(&consumer.finished, 1)
+	if consumerState, ok := s.consumers[consumerKey]; ok {
+		atomic.AddInt64(&consumerState.finished, 1)
+		// Decrement inFlight and ensure it doesn't go below 0
+		if newVal := atomic.AddInt32(&consumerState.inFlight, -1); newVal < 0 {
+			// This case should ideally not happen with correct accounting,
+			// but as a safeguard, log it and reset to 0.
+			log.Printf("Warning: inFlight for consumer %s went negative (%d). Resetting to 0.", consumerKey, newVal)
+			atomic.StoreInt32(&consumerState.inFlight, 0)
+		}
 	}
 	s.consumersMutex.RUnlock()
 
@@ -526,6 +511,7 @@ func (s *Server) handleConsumerStatusRoute(w http.ResponseWriter, r *http.Reques
 }
 
 // handleConsumerRdyRoute is the Go 1.22+ route handler for RDY control
+// This is an alias that changes the limit for consumers in a stream/group
 func (s *Server) handleConsumerRdyRoute(w http.ResponseWriter, r *http.Request) {
 	stream := r.PathValue("stream")
 	group := r.PathValue("group")
@@ -558,7 +544,7 @@ func (s *Server) handleConsumerRdyRoute(w http.ResponseWriter, r *http.Request) 
 	}
 
 	for _, consumer := range matchingConsumers {
-		atomic.StoreInt32(&consumer.ready, int32(req.Count))
+		atomic.StoreInt32(&consumer.limit, int32(req.Count))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -811,7 +797,7 @@ func (s *Server) handleBatchAdd(w http.ResponseWriter, r *http.Request, stream s
 	})
 }
 
-// handleConsumerRdy handles RDY control for all consumers of a stream/group - kept for tests
+// handleConsumerRdy handles RDY/limit control for all consumers of a stream/group - kept for tests
 func (s *Server) handleConsumerRdy(w http.ResponseWriter, r *http.Request, stream, group string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -841,7 +827,7 @@ func (s *Server) handleConsumerRdy(w http.ResponseWriter, r *http.Request, strea
 	}
 
 	for _, consumer := range matchingConsumers {
-		atomic.StoreInt32(&consumer.ready, int32(req.Count))
+		atomic.StoreInt32(&consumer.limit, int32(req.Count))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -853,7 +839,7 @@ func (s *Server) handleConsumerRdy(w http.ResponseWriter, r *http.Request, strea
 }
 
 // handleConsumerEvents handles SSE endpoint for consuming messages
-// GET /api/events?stream=<stream>&group=<group>
+// GET /api/events?stream=<stream>&group=<group>&consumer=<name>&limit=<N>
 // Each HTTP client gets its own Redis consumer for load balancing
 func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 	// Parse query parameters for stream and group
@@ -863,6 +849,23 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 	if stream == "" || group == "" {
 		http.Error(w, "Stream and group query parameters are required", http.StatusBadRequest)
 		return
+	}
+
+	// Parse optional consumer name parameter
+	consumerNameParam := r.URL.Query().Get("consumer")
+
+	// Parse limit parameter (default to 1 for backward compatibility)
+	// Parse limit parameter (default to 1 for backward compatibility)
+	// A limit of 0 is valid and pauses message delivery (can be changed later via /rdy)
+	limitStr := r.URL.Query().Get("limit")
+	limit := int32(1) // Default limit
+	if limitStr != "" {
+		parsedLimit, err := strconv.Atoi(limitStr)
+		if err != nil || parsedLimit < 0 {
+			http.Error(w, "Invalid limit parameter: must be a non-negative integer", http.StatusBadRequest)
+			return
+		}
+		limit = int32(parsedLimit)
 	}
 
 	// Set SSE headers
@@ -877,10 +880,15 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create a unique consumer ID for this HTTP client
-	consumerID := atomic.AddUint64(&s.consumerIDCounter, 1)
-	consumerName := fmt.Sprintf("consumer-%d", consumerID)
-	consumerKey := fmt.Sprintf("%s:%s:%d", stream, group, consumerID)
+	// Create consumer name - use provided name or generate a unique one
+	var consumerName string
+	if consumerNameParam != "" {
+		consumerName = consumerNameParam
+	} else {
+		consumerID := atomic.AddUint64(&s.consumerIDCounter, 1)
+		consumerName = fmt.Sprintf("consumer-%d", consumerID)
+	}
+	consumerKey := fmt.Sprintf("%s:%s:%s", stream, group, consumerName)
 
 	ctx := context.Background()
 
@@ -898,11 +906,18 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 		consumerName: consumerName,
 		stopChan:     make(chan struct{}),
 		messageChan:  make(chan redis.XMessage, 100),
-		ready:        1, // Default RDY=1
+		limit:        limit,
+		inFlight:     0,
 	}
 
-	// Store consumer for RDY control
+	// Store consumer for limit control (check for duplicate consumer)
 	s.consumersMutex.Lock()
+	if _, exists := s.consumers[consumerKey]; exists {
+		s.consumersMutex.Unlock()
+		log.Printf("Consumer %s is already connected", consumerKey)
+		http.Error(w, fmt.Sprintf("Consumer %s is already connected", consumerName), http.StatusConflict)
+		return
+	}
 	s.consumers[consumerKey] = state
 	s.consumersMutex.Unlock()
 
@@ -932,8 +947,21 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 			case <-state.stopChan:
 				return
 			default:
-				// Check if RDY count allows reading
-				if atomic.LoadInt32(&state.ready) <= 0 {
+				// Gate: Check if limit allows reading
+				// Note: We use polling with sleep instead of channel-based notification
+				// for simplicity. The 100ms sleep is a trade-off between responsiveness
+				// and CPU usage. For high-throughput scenarios, consider implementing
+				// a notification channel from the finish handler.
+				currentLimit := atomic.LoadInt32(&state.limit)
+				if currentLimit <= 0 {
+					time.Sleep(100 * time.Millisecond)
+					continue
+				}
+
+				// Gate: Check if inFlight count allows reading
+				currentInFlight := atomic.LoadInt32(&state.inFlight)
+				if currentInFlight >= currentLimit {
+					// Consumer has maximum messages in-flight, don't read more from Redis
 					time.Sleep(100 * time.Millisecond)
 					continue
 				}
@@ -966,6 +994,7 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 						select {
 						case state.messageChan <- msg:
 							atomic.AddInt64(&state.received, 1)
+							atomic.AddInt32(&state.inFlight, 1)
 						case <-state.stopChan:
 							return
 						}
@@ -1012,6 +1041,7 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 						select {
 						case state.messageChan <- msg:
 							atomic.AddInt64(&state.received, 1)
+							atomic.AddInt32(&state.inFlight, 1)
 						case <-state.stopChan:
 							return
 						}
@@ -1021,7 +1051,7 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	log.Printf("Consumer %s connected for stream=%s group=%s", consumerKey, stream, group)
+	log.Printf("Consumer %s connected for stream=%s group=%s limit=%d", consumerKey, stream, group, limit)
 
 	// Setup keepalive ticker if enabled (interval > 0)
 	// Note: When keepalive is disabled, keepaliveChan remains nil.
@@ -1051,29 +1081,6 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// Store message info in Redis for stateless operation
-			// This allows the service to be restarted without losing message tracking
-			msgInfo := activeMessageInfo{
-				Stream:      stream,
-				Group:       group,
-				ConsumerKey: consumerKey,
-			}
-			msgInfoJSON, err := json.Marshal(msgInfo)
-			if err != nil {
-				log.Printf("Failed to marshal message info: %v", err)
-				continue
-			}
-
-			key := activeMessageKeyPrefix + msg.ID
-			// Set message info with TTL equal to messageExpiryDuration
-			// When TTL expires, Redis automatically deletes the key,
-			// leaving the message in PEL for reclaim via XCLAIM
-			err = s.redisClient.Set(requestCtx, key, msgInfoJSON, messageExpiryDuration).Err()
-			if err != nil {
-				log.Printf("Failed to store message info in Redis: %v", err)
-				continue
-			}
-
 			// Get the data field from the message
 			var body interface{}
 			if data, ok := msg.Values["data"]; ok {
@@ -1097,9 +1104,6 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 			jsonData, err := json.Marshal(data)
 			if err != nil {
 				log.Printf("Failed to marshal message: %v", err)
-				if delErr := s.redisClient.Del(requestCtx, key).Err(); delErr != nil {
-					log.Printf("Failed to delete message info from Redis: %v", delErr)
-				}
 				continue
 			}
 
