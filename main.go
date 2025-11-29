@@ -454,10 +454,18 @@ func (s *Server) handleFinishNewRoute(w http.ResponseWriter, r *http.Request) {
 	s.consumersMutex.RLock()
 	if consumerState, ok := s.consumers[consumerKey]; ok {
 		atomic.AddInt64(&consumerState.finished, 1)
-		newInFlight := atomic.AddInt32(&consumerState.inFlight, -1)
-		if newInFlight < 0 {
-			log.Printf("Warning: inFlight became negative (%d) for consumer %s, resetting to 0", newInFlight, consumerKey)
-			atomic.StoreInt32(&consumerState.inFlight, 0)
+		// Decrement inFlight and ensure it doesn't go below 0
+		for {
+			current := atomic.LoadInt32(&consumerState.inFlight)
+			if current <= 0 {
+				// Already at 0, nothing to decrement
+				log.Printf("Warning: inFlight already at %d for consumer %s when finishing message", current, consumerKey)
+				break
+			}
+			if atomic.CompareAndSwapInt32(&consumerState.inFlight, current, current-1) {
+				break
+			}
+			// CAS failed, retry
 		}
 	}
 	s.consumersMutex.RUnlock()
@@ -869,6 +877,8 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 	consumerNameParam := r.URL.Query().Get("consumer")
 
 	// Parse limit parameter (default to 1 for backward compatibility)
+	// Parse limit parameter (default to 1 for backward compatibility)
+	// A limit of 0 is valid and pauses message delivery (can be changed later via /rdy)
 	limitStr := r.URL.Query().Get("limit")
 	limit := int32(1) // Default limit
 	if limitStr != "" {
@@ -954,6 +964,10 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			default:
 				// Gate: Check if limit allows reading
+				// Note: We use polling with sleep instead of channel-based notification
+				// for simplicity. The 100ms sleep is a trade-off between responsiveness
+				// and CPU usage. For high-throughput scenarios, consider implementing
+				// a notification channel from the finish handler.
 				currentLimit := atomic.LoadInt32(&state.limit)
 				if currentLimit <= 0 {
 					time.Sleep(100 * time.Millisecond)
