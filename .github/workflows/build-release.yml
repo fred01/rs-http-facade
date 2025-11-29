@@ -51,15 +51,22 @@ jobs:
 
       - name: Display coverage
         run: |
-          echo "## Test Coverage Report" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          go tool cover -func=coverage.out >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}')
-          echo "**Total Coverage: $COVERAGE**" >> $GITHUB_STEP_SUMMARY
-          echo "Total coverage: $COVERAGE"
+          if [ -f coverage.out ]; then
+            echo "## Test Coverage Report" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            go tool cover -func=coverage.out >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}')
+            echo "**Total Coverage: $COVERAGE**" >> $GITHUB_STEP_SUMMARY
+            echo "Total coverage: $COVERAGE"
+          else
+            echo "## Test Coverage Report" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ No coverage data available (coverage.out not found)" >> $GITHUB_STEP_SUMMARY
+            echo "Warning: coverage.out not found"
+          fi
 
       - name: Upload coverage
         uses: actions/upload-artifact@v4
