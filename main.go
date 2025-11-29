@@ -98,7 +98,6 @@ func (s *Server) Start() error {
 
 	// Message lifecycle endpoints
 	mux.HandleFunc("POST /api/streams/{stream}/groups/{group}/consumers/{consumer}/messages/{messageId}/finish", s.authMiddleware(s.handleFinishNewRoute))
-	mux.HandleFunc("POST /api/messages/{messageId}/finish", s.authMiddleware(s.handleFinishRoute))
 
 	// Consumer endpoints
 	mux.HandleFunc("GET /api/events", s.authMiddleware(s.handleConsumerEvents))
@@ -473,21 +472,6 @@ func (s *Server) handleFinishNewRoute(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "action": "finished"})
-}
-
-// handleFinishRoute is the legacy route handler for finishing messages (deprecated)
-// POST /api/messages/{messageId}/finish
-// This is kept for backward compatibility but clients should migrate to the new endpoint
-func (s *Server) handleFinishRoute(w http.ResponseWriter, r *http.Request) {
-	messageID := r.PathValue("messageId")
-	if messageID == "" {
-		http.Error(w, "Message ID required", http.StatusBadRequest)
-		return
-	}
-
-	// Since we no longer store message info in Redis, we cannot know which stream/group
-	// this message belongs to. Return an error indicating clients should use the new endpoint.
-	http.Error(w, "This endpoint is deprecated. Use POST /api/streams/{stream}/groups/{group}/consumers/{consumer}/messages/{messageId}/finish", http.StatusGone)
 }
 
 // handleConsumerStatusRoute is the Go 1.22+ route handler for consumer status

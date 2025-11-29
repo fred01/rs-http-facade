@@ -307,37 +307,6 @@ func TestHandleConsumerRdyValidation(t *testing.T) {
 	}
 }
 
-func TestHandleFinishRouteValidation(t *testing.T) {
-	server := createTestServer()
-
-	tests := []struct {
-		name           string
-		messageId      string
-		expectedStatus int
-	}{
-		{
-			name:           "Deprecated endpoint returns Gone",
-			messageId:      "nonexistent-0",
-			expectedStatus: http.StatusGone,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest("POST", "/api/messages/"+tt.messageId+"/finish", nil)
-			req.Header.Set("Authorization", "Bearer "+testToken)
-			req.SetPathValue("messageId", tt.messageId)
-
-			rr := httptest.NewRecorder()
-			server.handleFinishRoute(rr, req)
-
-			if rr.Code != tt.expectedStatus {
-				t.Errorf("expected status %d, got %d", tt.expectedStatus, rr.Code)
-			}
-		})
-	}
-}
-
 func TestHandleFinishNewRouteValidation(t *testing.T) {
 	server := createTestServer()
 

@@ -400,35 +400,6 @@ paths:
               schema:
                 type: string
 
-  /api/messages/{messageId}/finish:
-    post:
-      tags:
-        - Message Lifecycle
-      summary: Finish message (DEPRECATED)
-      deprecated: true
-      description: |
-        **DEPRECATED**: This endpoint is deprecated. Use `/api/streams/{stream}/groups/{group}/consumers/{consumer}/messages/{messageId}/finish` instead.
-        
-        This endpoint is no longer functional and will return 410 Gone.
-      operationId: finishMessageLegacy
-      parameters:
-        - name: messageId
-          in: path
-          required: true
-          description: Message ID returned in the SSE event (Redis Stream entry ID format)
-          schema:
-            type: string
-            example: "1234567890123-0"
-      responses:
-        '410':
-          description: This endpoint is deprecated
-          content:
-            text/plain:
-              schema:
-                type: string
-        '401':
-          $ref: '#/components/responses/UnauthorizedError'
-
   /admin/ping:
     get:
       tags:
