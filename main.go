@@ -441,13 +441,11 @@ func (s *Server) handleFinishNewRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if acked == 0 {
-		log.Printf("Message %s not found in pending list for stream=%s group=%s", messageID, stream, group)
-		http.Error(w, "Message not found in pending list or already acknowledged", http.StatusNotFound)
-		return
-	}
-
 	// Update consumer stats (if consumer is still connected)
+	// IMPORTANT: Always decrement inFlight, even if XAck returns 0 (message not found).
+	// Otherwise the consumer will be stuck forever waiting for a slot that will never free up.
+	// This can happen if another consumer claimed the message via XAutoClaim while this
+	// consumer was processing it (e.g., processing took longer than messageExpiryDuration).
 	consumerKey := fmt.Sprintf("%s:%s:%s", stream, group, consumer)
 	s.consumersMutex.RLock()
 	if consumerState, ok := s.consumers[consumerKey]; ok {
@@ -461,6 +459,12 @@ func (s *Server) handleFinishNewRoute(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.consumersMutex.RUnlock()
+
+	if acked == 0 {
+		log.Printf("Message %s not found in pending list for stream=%s group=%s (already claimed or acknowledged)", messageID, stream, group)
+		http.Error(w, "Message not found in pending list or already acknowledged", http.StatusNotFound)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
