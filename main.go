@@ -44,8 +44,6 @@ var (
 	messageExpiryDuration = 5 * time.Minute
 )
 
-
-
 // Server encapsulates all application state and dependencies
 type Server struct {
 	config            AppConfig
@@ -439,6 +437,18 @@ func (s *Server) handleFinishNewRoute(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Failed to acknowledge message %s: %v", messageID, err)
 		http.Error(w, "Failed to acknowledge message", http.StatusInternalServerError)
 		return
+	}
+
+	// Delete the message from the stream to prevent queue overflow (SQS-like behavior)
+	// This happens after XACK so the message is properly acknowledged first
+	if acked > 0 {
+		deleted, err := s.redisClient.XDel(ctx, stream, messageID).Result()
+		if err != nil {
+			log.Printf("Failed to delete message %s from stream: %v", messageID, err)
+			// Don't fail the request - message was already acknowledged
+		} else if deleted > 0 {
+			log.Printf("Deleted message %s from stream %s", messageID, stream)
+		}
 	}
 
 	// Update consumer stats (if consumer is still connected)
