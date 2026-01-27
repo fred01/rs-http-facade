@@ -96,6 +96,7 @@ func (s *Server) Start() error {
 
 	// Message lifecycle endpoints
 	mux.HandleFunc("POST /api/streams/{stream}/groups/{group}/consumers/{consumer}/messages/{messageId}/finish", s.authMiddleware(s.handleFinishNewRoute))
+	mux.HandleFunc("POST /api/streams/{stream}/groups/{group}/consumers/{consumer}/finish", s.authMiddleware(s.handleBatchFinishRoute))
 
 	// Consumer endpoints
 	mux.HandleFunc("GET /api/events", s.authMiddleware(s.handleConsumerEvents))
@@ -481,6 +482,76 @@ func (s *Server) handleFinishNewRoute(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "action": "finished"})
 }
 
+// handleBatchFinishRoute handles batch message acknowledgment
+// POST /api/streams/{stream}/groups/{group}/consumers/{consumer}/finish
+func (s *Server) handleBatchFinishRoute(w http.ResponseWriter, r *http.Request) {
+	stream := r.PathValue("stream")
+	group := r.PathValue("group")
+	consumer := r.PathValue("consumer")
+
+	if stream == "" || group == "" || consumer == "" {
+		http.Error(w, "Stream, group, and consumer required", http.StatusBadRequest)
+		return
+	}
+
+	var req BatchFinishRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if len(req.MessageIDs) == 0 {
+		http.Error(w, "At least one message_id is required", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+
+	// Use pipeline for efficient batch operations
+	pipe := s.redisClient.Pipeline()
+	ackCmd := pipe.XAck(ctx, stream, group, req.MessageIDs...)
+	delCmd := pipe.XDel(ctx, stream, req.MessageIDs...)
+	_, err := pipe.Exec(ctx)
+
+	if err != nil {
+		log.Printf("Failed to batch finish messages: %v", err)
+		http.Error(w, "Failed to finish messages", http.StatusInternalServerError)
+		return
+	}
+
+	acked, _ := ackCmd.Result()
+	deleted, _ := delCmd.Result()
+
+	if acked > 0 {
+		log.Printf("Batch finished %d messages from stream %s (deleted %d)", acked, stream, deleted)
+	}
+
+	// Update consumer stats (if consumer is still connected)
+	// Decrement inFlight by the number of messages we tried to finish
+	// (same logic as single finish - always decrement to prevent deadlock)
+	consumerKey := fmt.Sprintf("%s:%s:%s", stream, group, consumer)
+	s.consumersMutex.RLock()
+	if consumerState, ok := s.consumers[consumerKey]; ok {
+		atomic.AddInt64(&consumerState.finished, int64(len(req.MessageIDs)))
+		newVal := atomic.AddInt32(&consumerState.inFlight, -int32(len(req.MessageIDs)))
+		if newVal < 0 {
+			log.Printf("Warning: inFlight for consumer %s went negative (%d). Resetting to 0.", consumerKey, newVal)
+			atomic.StoreInt32(&consumerState.inFlight, 0)
+		}
+	}
+	s.consumersMutex.RUnlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":   "ok",
+		"action":   "batch_finished",
+		"acked":    acked,
+		"deleted":  deleted,
+		"received": len(req.MessageIDs),
+	})
+}
+
 // handleConsumerStatusRoute is the Go 1.22+ route handler for consumer status
 func (s *Server) handleConsumerStatusRoute(w http.ResponseWriter, r *http.Request) {
 	stream := r.PathValue("stream")
@@ -687,6 +758,11 @@ type Message struct {
 // MultiMessage structure for batch publishing
 type MultiMessage struct {
 	Messages []json.RawMessage `json:"messages"`
+}
+
+// BatchFinishRequest structure for batch message acknowledgment
+type BatchFinishRequest struct {
+	MessageIDs []string `json:"message_ids"`
 }
 
 // handleAdd handles single message publishing (XADD) - kept for tests

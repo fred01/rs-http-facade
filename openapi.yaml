@@ -339,6 +339,77 @@ paths:
               schema:
                 type: string
 
+  /api/streams/{stream}/groups/{group}/consumers/{consumer}/finish:
+    post:
+      tags:
+        - Message Lifecycle
+      summary: Batch finish messages (XACK + XDEL pipeline)
+      description: |
+        Marks multiple messages as successfully processed using XACK and removes them from the stream.
+        This decreases the consumer's in-flight count by the number of messages finished, allowing it to receive more messages.
+        Uses Redis pipeline for efficient batch operations.
+      operationId: batchFinishMessages
+      parameters:
+        - name: stream
+          in: path
+          required: true
+          description: Redis Stream name
+          schema:
+            type: string
+            example: test-stream
+        - name: group
+          in: path
+          required: true
+          description: Consumer group name
+          schema:
+            type: string
+            example: test-group
+        - name: consumer
+          in: path
+          required: true
+          description: Consumer name
+          schema:
+            type: string
+            example: my-consumer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchFinishRequest'
+            example:
+              message_ids:
+                - "1234567890123-0"
+                - "1234567890124-0"
+                - "1234567890125-0"
+      responses:
+        '200':
+          description: Messages finished successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchFinishResponse'
+              example:
+                status: ok
+                action: batch_finished
+                acked: 3
+                deleted: 3
+                received: 3
+        '400':
+          description: Missing required path parameters or invalid JSON
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '500':
+          description: Failed to finish messages
+          content:
+            text/plain:
+              schema:
+                type: string
+
   /admin/ping:
     get:
       tags:
@@ -682,6 +753,48 @@ components:
           enum:
             - finished
           example: finished
+
+    BatchFinishRequest:
+      type: object
+      required:
+        - message_ids
+      properties:
+        message_ids:
+          type: array
+          items:
+            type: string
+            description: Redis Stream entry ID
+          minItems: 1
+          description: List of message IDs to finish
+      example:
+        message_ids:
+          - "1234567890123-0"
+          - "1234567890124-0"
+          - "1234567890125-0"
+
+    BatchFinishResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        action:
+          type: string
+          enum:
+            - batch_finished
+          example: batch_finished
+        acked:
+          type: integer
+          description: Number of messages successfully acknowledged
+          example: 3
+        deleted:
+          type: integer
+          description: Number of messages deleted from stream
+          example: 3
+        received:
+          type: integer
+          description: Number of message IDs received in request
+          example: 3
 
   responses:
     UnauthorizedError:
