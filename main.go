@@ -930,6 +930,16 @@ func (s *Server) handleConsumerEvents(w http.ResponseWriter, r *http.Request) {
 		// Wait a bit for goroutine to finish
 		time.Sleep(100 * time.Millisecond)
 
+		// Delete consumer from Redis to prevent orphaned consumer accumulation
+		if err := s.redisClient.XGroupDelConsumer(
+			context.Background(),
+			state.stream,
+			state.group,
+			state.consumerName,
+		).Err(); err != nil {
+			log.Printf("Warning: failed to delete consumer %s from Redis: %v", consumerKey, err)
+		}
+
 		s.consumersMutex.Lock()
 		delete(s.consumers, consumerKey)
 		s.consumersMutex.Unlock()
